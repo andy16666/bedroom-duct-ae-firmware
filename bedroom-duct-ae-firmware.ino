@@ -13,16 +13,13 @@
  * with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
- /*
-  Duct firmware for my house. Moves air from the AC unit to other rooms. Handles 
-  the HRV/air exchanger in the bedroom. 
+/*
+    Duct firmware for my house. Moves air from the AC unit to other rooms. Handles 
+    the HRV/air exchanger in the bedroom. 
 
-  Author: Andrew Somerville <andy16666@gmail.com> 
-  GitHub: andy16666
-  */
-
-#include <FreeRTOS.h>
-#include <task.h>
+    Author: Andrew Somerville <andy16666@gmail.com> 
+    GitHub: andy16666
+ */
 #include <LEAmDNS.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -34,10 +31,9 @@
 #include "config.h"
 #include <CPU.h>
 #include <string.h>
-
-#define STACK_SIZE 200
-#define CORE_0 (1 << 0)
-#define CORE_1 (1 << 1)
+extern "C" {
+#include "threadkernel.h"
+}
 
 #define LED_PIN CYW43_WL_GPIO_LED_PIN
 
@@ -45,10 +41,9 @@
 #define MAX_TEMP_C 60.0
 #define MIN_TEMP_C -40.0
 
-#define PING_INTERVAL_MS 5000
-#define SENSOR_READ_INTERVAL_MS 2000
+#define PING_INTERVAL_MS 10000
+#define SENSOR_READ_INTERVAL_MS 5000
 #define MAX_CONSECUTIVE_FAILED_PINGS 5
-
 
 #define HRV_LOW_EXHAUST  6
 #define HRV_LOW_INTAKE   7
@@ -76,7 +71,7 @@
 // Transition time for changes to fan speed and compressor state. This must be long enough
 // for the circuit breaker to recover. 1s is much too short. 5s is close to the factory
 // setting.
-#define TRANSITION_TIME_MS 2000
+#define TRANSITION_TIME_MS 5000
 
 #define HRV_INTAKE_INLET_TEMP_ADDR  139
 #define HRV_INTAKE_OUTLET_TEMP_ADDR 131
@@ -114,10 +109,10 @@ const char* STATUS_JSON_FORMAT =
   "  \"intakeTempC\":\"%f\",\n" \
   "  \"lrOutletTempC\":\"%f\",\n" \
   "  \"fewOutletTempC\":\"%f\",\n" \
-  "  \"cpuTempC\":\"%f\",\n" \
   "  \"hrvCommand\":\"%c\",\n" \
   "  \"lrDuctCommand\":\"%c\",\n" \
   "  \"fewDuctCommand\":\"%c\",\n" \
+  "  \"cpuTempC\":\"%f\",\n" \
   "  \"tempErrors\":%d,\n" \
   "  \"lastPing\":\"%fms\",\n" \
   "  \"consecutiveFailedPings\":%d,\n" \
@@ -215,20 +210,25 @@ static volatile long            powerUpTime            __attribute__((section(".
 static volatile long            tempErrors             __attribute__((section(".uninitialized_data")));
 static volatile long            numRebootsPingFailed   __attribute__((section(".uninitialized_data")));
 static volatile long            numRebootsDisconnected __attribute__((section(".uninitialized_data")));
+
 static volatile ventilate_cmd_t ventilateCommand       __attribute__((section(".uninitialized_data")));
 static volatile lr_duct_cmd_t   lrDuctCommand          __attribute__((section(".uninitialized_data")));
 static volatile few_duct_cmd_t  fewDuctCommand         __attribute__((section(".uninitialized_data"))); 
 
-volatile unsigned long lastStateChangeTimeMs = millis();
 volatile unsigned long startupTime = millis();
 volatile unsigned long connectTime = millis();
-volatile int  lastPingMicros = 0; 
-volatile unsigned long nextPingTimeMs = 0; 
-volatile unsigned long nextSensorReadTime = 0;
-volatile unsigned int consecutiveFailedPings = 0;  
+
+volatile unsigned long lastPingMicros = 0; 
+volatile unsigned int consecutiveFailedPings = 0; 
+
+threadkernel_t* CORE_0_KERNEL; 
+threadkernel_t* CORE_1_KERNEL;
 
 void setup() 
 {
+  CORE_0_KERNEL = create_threadkernel(&millis); 
+  CORE_1_KERNEL = create_threadkernel(&millis); 
+
   if (initialize)
   {
     timeBaseMs = 0; 
@@ -244,8 +244,6 @@ void setup()
 
   cpu.begin(); 
 
-  pinMode(LED_PIN, OUTPUT); 
-
   Serial.begin();
   Serial.setDebugOutput(false);
   
@@ -256,14 +254,14 @@ void setup()
     Serial.println("MDNS responder started");
   }
 
-  MDNS.update();
-
   server.on("/", []() {
-    for (uint8_t i = 0; i < server.args(); i++) {
+    for (uint8_t i = 0; i < server.args(); i++) 
+    {
       String argName = server.argName(i);
       String arg = server.arg(i);
 
-      if (argName.equals("hrv") && arg.length() == 1) {
+      if (argName.equals("hrv") && arg.length() == 1) 
+      {
         switch(arg.charAt(0))
         {
           case 'O':  ventilateCommand = CMD_VENTILATE_OFF;  break;
@@ -274,7 +272,8 @@ void setup()
         }
       }
 
-      if (argName.equals("lr") && arg.length() == 1) {
+      if (argName.equals("lr") && arg.length() == 1) 
+      {
         switch(arg.charAt(0))
         {
           case 'O':  lrDuctCommand = CMD_LR_DUCT_OFF;  break;
@@ -285,7 +284,8 @@ void setup()
         }
       }
 
-      if (argName.equals("ew") && arg.length() == 1) {
+      if (argName.equals("ew") && arg.length() == 1) 
+      {
         switch(arg.charAt(0))
         {
           case 'O':  fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF;  break;
@@ -294,7 +294,8 @@ void setup()
         }
       }
 
-      if (argName.equals("bootloader") && arg.length() == 1) {
+      if (argName.equals("bootloader") && arg.length() == 1) 
+      {
         switch(arg.charAt(0))
         {
           case 'A':  rp2040.rebootToBootloader();  break;
@@ -302,7 +303,8 @@ void setup()
         }
       }
 
-      if (argName.equals("reboot") && arg.length() == 1) {
+      if (argName.equals("reboot") && arg.length() == 1) 
+      {
         switch(arg.charAt(0))
         {
           case 'A':  reboot(); break;
@@ -311,81 +313,57 @@ void setup()
       }
     }
 
-    unsigned long timeMs = millis(); 
-    char* buffer = (char*)malloc(1024 * sizeof(char));
-    char* poweredTimeStr = msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime); 
-    char* bootedTimeStr = msToHumanReadableTime(timeMs - startupTime); 
-    char* connectedTimeStr = msToHumanReadableTime(timeMs - connectTime); 
-    sprintf(buffer, STATUS_JSON_FORMAT,
-            TEMPERATURES_C[HRV_INTAKE_INLET_IDX],
-            TEMPERATURES_C[HRV_INTAKE_OUTLET_IDX],
-            TEMPERATURES_C[HRV_EXHAUST_INLET_IDX], 
-            TEMPERATURES_C[HRV_EXHAUST_OUTLET_IDX], 
-            TEMPERATURES_C[INTAKE_IDX],
-            TEMPERATURES_C[LR_OUTLET_IDX],
-            TEMPERATURES_C[FEW_OUTLET_IDX],
-            cpu.getTemperature(),
-            ventilateCommand,
-            lrDuctCommand,
-            fewDuctCommand,
-            tempErrors,
-            lastPingMicros/1000.0,
-            consecutiveFailedPings,
-            getFreeHeap(),
-            poweredTimeStr, 
-            bootedTimeStr,
-            connectedTimeStr,
-            numRebootsPingFailed,
-            numRebootsDisconnected, 
-            WiFi.status());
-    free(poweredTimeStr); 
-    free(bootedTimeStr); 
-    free(connectedTimeStr); 
-    server.send(200, "text/json", buffer);
-    free(buffer);
+    {
+      char* buffer = (char*)malloc(1024 * sizeof(char));
+      {
+        unsigned long timeMs = millis(); 
+        char* poweredTimeStr = msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime); 
+        char* bootedTimeStr = msToHumanReadableTime(timeMs - startupTime); 
+        char* connectedTimeStr = msToHumanReadableTime(timeMs - connectTime); 
+        sprintf(buffer, STATUS_JSON_FORMAT,
+                TEMPERATURES_C[HRV_INTAKE_INLET_IDX],
+                TEMPERATURES_C[HRV_INTAKE_OUTLET_IDX],
+                TEMPERATURES_C[HRV_EXHAUST_INLET_IDX], 
+                TEMPERATURES_C[HRV_EXHAUST_OUTLET_IDX], 
+                TEMPERATURES_C[INTAKE_IDX],
+                TEMPERATURES_C[LR_OUTLET_IDX],
+                TEMPERATURES_C[FEW_OUTLET_IDX],
+                ventilateCommand,
+                lrDuctCommand,
+                fewDuctCommand,
+                cpu.getTemperature(),
+                tempErrors,
+                lastPingMicros/1000.0,
+                consecutiveFailedPings,
+                getFreeHeap(),
+                poweredTimeStr, 
+                bootedTimeStr,
+                connectedTimeStr,
+                numRebootsPingFailed,
+                numRebootsDisconnected, 
+                WiFi.status());
+        free(poweredTimeStr); 
+        free(bootedTimeStr); 
+        free(connectedTimeStr); 
+      }
+      server.send(200, "text/json", buffer);
+      free(buffer);
+    }
   });
 
   server.onNotFound(handleNotFound);
   server.begin();
   Serial.println("HTTP server started");
-  MDNS.update(); 
+  
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_mdnsUpdate, 1000); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_testPing, PING_INTERVAL_MS); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_testWiFiConnection, 0); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_handleClient, 0); 
 }
 
 void loop() 
 {
-  if (!is_wifi_connected()) 
-  {
-    Serial.println("WiFi disconnected, rebooting.");
-    numRebootsDisconnected++; 
-    reboot();  
-  }
-
-  if (millis() > nextPingTimeMs)
-  {
-    unsigned long timeMicros = micros(); 
-    int pingStatus = WiFi.ping(WiFi.gatewayIP(), 255); 
-    lastPingMicros = micros() - timeMicros; 
-    if (pingStatus < 0) 
-    {
-      if (++consecutiveFailedPings >= MAX_CONSECUTIVE_FAILED_PINGS)
-      {
-        Serial.println("Gateway unresponsive, rebooting.");
-        numRebootsPingFailed++; 
-        reboot(); 
-      }
-    }
-    else 
-    {
-      consecutiveFailedPings = 0; 
-    }
-
-    nextPingTimeMs = millis() + PING_INTERVAL_MS; 
-  }
-
-  digitalWrite(LED_PIN, HIGH);
-  server.handleClient();
-  digitalWrite(LED_PIN, LOW);
-  MDNS.update();
+  CORE_0_KERNEL->run(CORE_0_KERNEL); 
 }
 
 void setup1()
@@ -399,23 +377,76 @@ void setup1()
   {
     digitalWrite(BLOWER_PINS[i], HIGH);
   }
+
+  CORE_1_KERNEL->add(CORE_1_KERNEL, readTemperatures, SENSOR_READ_INTERVAL_MS); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 0); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
 
 void loop1()
 {
-  if (millis() > nextSensorReadTime)
+  CORE_1_KERNEL->run(CORE_1_KERNEL); 
+}
+
+void task_handleClient()
+{
+  server.handleClient(); 
+}
+
+void task_mdnsUpdate()
+{
+  MDNS.update(); 
+}
+
+void task_testWiFiConnection()
+{
+  if (!is_wifi_connected()) 
   {
-    readTemperatures(); 
-
-    for (int i = 0; i < NUM_SENSORS; i++)
-    {
-      Serial.printf("%s: %fC\r\n", SENSOR_NAMES[i], TEMPERATURES_C[i]);
-    }
-
-    nextSensorReadTime = millis() + SENSOR_READ_INTERVAL_MS; 
+    Serial.println("WiFi disconnected, rebooting.");
+    numRebootsDisconnected++; 
+    reboot();  
   }
+}
 
-  processCommands(); 
+void task_testPing()
+{
+  unsigned long timeMicros = micros(); 
+  int pingStatus = WiFi.ping(WiFi.gatewayIP(), 255); 
+  lastPingMicros = micros() - timeMicros; 
+  if (pingStatus < 0) 
+  {
+    if (++consecutiveFailedPings >= MAX_CONSECUTIVE_FAILED_PINGS)
+    {
+      Serial.println("Gateway unresponsive, rebooting.");
+      numRebootsPingFailed++; 
+      reboot(); 
+    }
+  }
+  else 
+  {
+    consecutiveFailedPings = 0; 
+  }
+}
+
+void task_processCommands()
+{
+  processCommands(ventilateCommand, lrDuctCommand, fewDuctCommand);
+}
+
+void task_readTemperatures()
+{
+  readTemperatures(); 
+
+  for (int i = 0; i < NUM_SENSORS; i++)
+  {
+    Serial.printf("%s: %fC\r\n", SENSOR_NAMES[i], TEMPERATURES_C[i]);
+  }
+}
+
+void task_updateNextBlower()
+{
+  if (updateNextBlower())
+    printBlowerStates(); 
 }
 
 void reboot()
@@ -428,6 +459,96 @@ unsigned long millisSincePowerOn()
 {
   return timeBaseMs + millis(); 
 }
+
+
+void processCommands(ventilate_cmd_t ventilateCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
+{
+  setBlower(HRV_HIGH_INTAKE_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || ventilateCommand == CMD_VENTILATE_MED
+      ? BLOWER_ON : BLOWER_OFF); 
+
+  setBlower(HRV_LOW_INTAKE_IDX, 
+      ventilateCommand != CMD_VENTILATE_OFF 
+      ? BLOWER_ON : BLOWER_OFF); 
+
+  setBlower(HRV_HIGH_EXHAUST_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || ventilateCommand == CMD_VENTILATE_MED
+      || (
+        ventilateCommand == CMD_VENTILATE_OFF 
+        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
+      )
+      ? BLOWER_ON : BLOWER_OFF); 
+
+  setBlower(HRV_LOW_EXHAUST_IDX, 
+      ventilateCommand != CMD_VENTILATE_OFF
+      || (
+        ventilateCommand == CMD_VENTILATE_OFF 
+        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
+      )
+      ? BLOWER_ON : BLOWER_OFF); 
+    
+  setBlower(HRV_EXHAUST_BOOST_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || (
+        ventilateCommand == CMD_VENTILATE_OFF 
+        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
+      )
+      ? BLOWER_ON : BLOWER_OFF); 
+    
+  setBlower(EXHAUST_BYPASS_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || lrDuctCommand != CMD_LR_DUCT_OFF
+      ? BLOWER_ON : BLOWER_OFF); 
+
+  setBlower(LR_DUCT_BOOST_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || lrDuctCommand == CMD_LR_DUCT_HIGH
+      ? BLOWER_ON : BLOWER_OFF); 
+
+  setBlower(FEW_OUTLET_IDX, 
+      ventilateCommand == CMD_VENTILATE_HIGH 
+      || fewDuctCommand == CMD_ENTRYWAY_DUCT_HIGH
+      ? BLOWER_ON : BLOWER_OFF); 
+}
+
+int setBlower(int blowerIndex, blower_state_t state)
+{
+  if (BLOWER_COMMANDS[blowerIndex] != state)
+  {
+    BLOWER_COMMANDS[blowerIndex] = state; 
+    return 1; 
+  }
+
+  return 0; 
+}
+
+int updateNextBlower()
+{
+  for (int i = 0; i < NUM_BLOWER_PINS; i++)
+  {
+    if (BLOWER_COMMANDS[i] != BLOWER_STATES[i]) 
+    {
+      digitalWrite(BLOWER_PINS[i], BLOWER_COMMANDS[i] == BLOWER_OFF ? HIGH : LOW); 
+      BLOWER_STATES[i] = BLOWER_COMMANDS[i]; 
+      return 1;
+    }
+  }
+
+  return 0; 
+}
+
+void printBlowerStates()
+{
+  for (int i = 0; i < NUM_BLOWER_PINS; i++)
+  {
+    Serial.printf("[%s=%c>%c]", BLOWER_NAMES[i], BLOWER_COMMANDS[i], BLOWER_STATES[i]); 
+  }
+  Serial.println(""); 
+}
+
+// WIFI
 
 bool is_wifi_connected() 
 {
@@ -487,103 +608,6 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-void processCommands()
-{
-  setBlower(HRV_HIGH_INTAKE_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || ventilateCommand == CMD_VENTILATE_MED
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(HRV_LOW_INTAKE_IDX, 
-      ventilateCommand != CMD_VENTILATE_OFF 
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(HRV_HIGH_EXHAUST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || ventilateCommand == CMD_VENTILATE_MED
-      || (
-        ventilateCommand == CMD_VENTILATE_OFF 
-        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(HRV_LOW_EXHAUST_IDX, 
-      ventilateCommand != CMD_VENTILATE_OFF
-      || (
-        ventilateCommand == CMD_VENTILATE_OFF 
-        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
-    
-  setBlower(HRV_EXHAUST_BOOST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || (
-        ventilateCommand == CMD_VENTILATE_OFF 
-        && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
-    
-  setBlower(EXHAUST_BYPASS_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || lrDuctCommand != CMD_LR_DUCT_OFF
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(LR_DUCT_BOOST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || lrDuctCommand == CMD_LR_DUCT_HIGH
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(FEW_OUTLET_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || fewDuctCommand == CMD_ENTRYWAY_DUCT_HIGH
-      ? BLOWER_ON : BLOWER_OFF); 
-  
-  if (updateBlowers())
-    printBlowerStates(); 
-}
-
-int setBlower(int blowerIndex, blower_state_t state)
-{
-  if (BLOWER_COMMANDS[blowerIndex] != state)
-  {
-    BLOWER_COMMANDS[blowerIndex] = state; 
-    return 1; 
-  }
-
-  return 0; 
-}
-
-int updateBlowers()
-{
-  int updated = 0; 
-
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    if (BLOWER_COMMANDS[i] != BLOWER_STATES[i]) {
-      updated++; 
-      digitalWrite(BLOWER_PINS[i], BLOWER_COMMANDS[i] == BLOWER_OFF ? HIGH : LOW); 
-      BLOWER_STATES[i] = BLOWER_COMMANDS[i]; 
-    }
-  }
-
-  if (updated)
-  {
-    delay(TRANSITION_TIME_MS);
-  }
-
-  return updated; 
-}
-
-void printBlowerStates()
-{
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    Serial.printf("[%s=%c>%c]", BLOWER_NAMES[i], BLOWER_COMMANDS[i], BLOWER_STATES[i]); 
-  }
-  Serial.println(""); 
-}
-
-
 // TEMP SENSORS
 
 int isTempCValid(float tempC) 
@@ -603,7 +627,8 @@ void readTemperatures()
 
   for (int i = 0; i < 256; i++) { newTempC[i] = INVALID_TEMP; }
   
-  while (ds.selectNext()) {
+  while (ds.selectNext())
+  {
     uint8_t sensorAddress[8];
     ds.getAddress(sensorAddress);
     float reading1C = ds.getTempC(); 
