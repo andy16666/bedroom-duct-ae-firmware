@@ -20,29 +20,36 @@
     Author: Andrew Somerville <andy16666@gmail.com> 
     GitHub: andy16666
  */
+#include <Arduino_JSON.h>
 #include <LEAmDNS.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <stdint.h>
 #include <float.h>
 #include <math.h>
-#include "DS18B20.h"
 #include "config.h"
 #include <CPU.h>
 #include <string.h>
+#include <GPIOOutputs.h>
+#include <Thermostats.h>
+#include <TemperatureSensors.h>
+#include <GPIOOutputs.h>
+#include <util.h>
+#include <SimplicityAC.h> 
 extern "C" {
-#include "threadkernel.h"
-}
+#include <threadkernel.h>
+};
 
-#define LED_PIN CYW43_WL_GPIO_LED_PIN
+using namespace AOS; 
+using AOS::Thermostat; 
+using AOS::Thermostats;
 
 #define TEMP_SENSOR_PIN 2
-#define MAX_TEMP_C 60.0
-#define MIN_TEMP_C -40.0
 
-#define PING_INTERVAL_MS 10000
-#define SENSOR_READ_INTERVAL_MS 5000
+#define PING_INTERVAL_MS 5000
+#define SENSOR_READ_INTERVAL_MS 6000
 #define MAX_CONSECUTIVE_FAILED_PINGS 5
 
 #define HRV_LOW_EXHAUST  6
@@ -55,65 +62,53 @@ extern "C" {
 #define ENTRYWAY_BYPASS   12
 #define LR_DUCT_BOOST     13
 
-#define HRV_LOW_EXHAUST_IDX  0
-#define HRV_LOW_INTAKE_IDX   1
-#define HRV_HIGH_EXHAUST_IDX 2
-#define HRV_HIGH_INTAKE_IDX  3
+#define CORE_0_ACT   18
+#define CORE_1_ACT     19
 
-#define HRV_EXHAUST_BOOST_IDX 4
-#define EXHAUST_BYPASS_IDX    5
-#define ENTRYWAY_BYPASS_IDX   6
-#define LR_DUCT_BOOST_IDX     7
-
-
-#define NUM_BLOWER_PINS   8
-
-// Transition time for changes to fan speed and compressor state. This must be long enough
-// for the circuit breaker to recover. 1s is much too short. 5s is close to the factory
-// setting.
-#define TRANSITION_TIME_MS 5000
+#define TRANSITION_TIME_MS 2000
 
 #define HRV_INTAKE_INLET_TEMP_ADDR  139
 #define HRV_INTAKE_OUTLET_TEMP_ADDR 131
 #define HRV_EXHAUST_INLET_TEMP_ADDR 191
 #define HRV_EXHAUST_OUTLET_TEMP_ADDR 205
+//#define INTAKE_TEMP_ADDR 83
+//#define LR_OUTLET_TEMP_ADDR 226
+//#define FEW_OUTLET_TEMP_ADDR 181
 #define INTAKE_TEMP_ADDR 12
 #define LR_OUTLET_TEMP_ADDR 235
 #define FEW_OUTLET_TEMP_ADDR 176
 
-#define INVALID_TEMP FLT_MIN
-
-#define HRV_INTAKE_INLET_IDX   0
-#define HRV_INTAKE_OUTLET_IDX  1
-#define HRV_EXHAUST_INLET_IDX  2
-#define HRV_EXHAUST_OUTLET_IDX 3
-#define INTAKE_IDX 4
-#define LR_OUTLET_IDX 5
-#define FEW_OUTLET_IDX 6
-#define NUM_SENSORS 7
-
-DS18B20 ds(TEMP_SENSOR_PIN);
 CPU cpu; 
-
-typedef enum {
-  BLOWER_OFF = '0', 
-  BLOWER_ON  = '1'
-} blower_state_t;
+TemperatureSensors TEMPERATURES(TEMP_SENSOR_PIN);
+GPIOOutputs BLOWERS("Blowers");
+WebServer server(80);
+AOS::Thermostats thermostats;
+SimplicityAC acData(AC_HOSTNAME); 
 
 const char* STATUS_JSON_FORMAT = 
   "{\n"\
-  "  \"hrvIntakeInletTempC\":\"%f\",\n" \
-  "  \"hrvIntakeOutletTempC\":\"%f\",\n" \
-  "  \"hrvExhaustInletTempC\":\"%f\",\n" \
-  "  \"hrvExhaustOutletTempC\":\"%f\",\n" \
-  "  \"intakeTempC\":\"%f\",\n" \
-  "  \"lrOutletTempC\":\"%f\",\n" \
-  "  \"fewOutletTempC\":\"%f\",\n" \
+  "  \"acData\":{\n" \
+  "    \"evapTempC\":\"%f\",\n" \
+  "    \"outletTempC\":\"%f\",\n" \
+  "    \"lastUpdated\":\"%s\",\n" \
+  "    \"command\":\"%c\",\n" \
+  "    \"state\":\"%c\",\n" \
+  "    \"fanState\":\"%c\",\n" \
+  "    \"compressorState\":\"%d\"\n" \
+  "  },\n" \
+  "  \"hrvIntakeInletTempC\":\"%s\",\n" \
+  "  \"hrvIntakeOutletTempC\":\"%s\",\n" \
+  "  \"hrvExhaustInletTempC\":\"%s\",\n" \
+  "  \"hrvExhaustOutletTempC\":\"%s\",\n" \
+  "  \"intakeTempC\":\"%s\",\n" \
+  "  \"lrOutletTempC\":\"%s\",\n" \
+  "  \"fewOutletTempC\":\"%s\",\n" \
   "  \"hrvCommand\":\"%c\",\n" \
   "  \"lrDuctCommand\":\"%c\",\n" \
   "  \"fewDuctCommand\":\"%c\",\n" \
   "  \"cpuTempC\":\"%f\",\n" \
   "  \"tempErrors\":%d,\n" \
+  "  \"thermostats\":%s,\n" \
   "  \"lastPing\":\"%fms\",\n" \
   "  \"consecutiveFailedPings\":%d,\n" \
   "  \"freeMem\":%d,\n" \
@@ -124,66 +119,6 @@ const char* STATUS_JSON_FORMAT =
   "  \"numRebootsDisconnected\":%d,\n" \
   "  \"wiFiStatus\":%d\n" \
   "}\n";
-
-
-const uint8_t TEMP_SENSOR_ADDRESSES[(NUM_SENSORS)] = {
-  HRV_INTAKE_INLET_TEMP_ADDR, 
-  HRV_INTAKE_OUTLET_TEMP_ADDR, 
-  HRV_EXHAUST_INLET_TEMP_ADDR,
-  HRV_EXHAUST_OUTLET_TEMP_ADDR, 
-  INTAKE_TEMP_ADDR, 
-  LR_OUTLET_TEMP_ADDR, 
-  FEW_OUTLET_TEMP_ADDR
-};
-
-float            TEMPERATURES_C[(NUM_SENSORS)]    = {INVALID_TEMP, INVALID_TEMP, INVALID_TEMP, INVALID_TEMP, INVALID_TEMP, INVALID_TEMP, INVALID_TEMP};
-const char*      SENSOR_NAMES[(NUM_SENSORS)] = {"HRV Intake Inlet", "HRV Intake Outlet", "HRV Exhaust Inlet", "HRV Exhaust Outlet", "Intake", "Living Room Outlet", "Front Entryway Outlet"}; 
-
-const pin_size_t BLOWER_PINS[(NUM_BLOWER_PINS)]  = {
-  HRV_LOW_EXHAUST, 
-  HRV_LOW_INTAKE, 
-  HRV_HIGH_EXHAUST, 
-  HRV_HIGH_INTAKE, 
-  HRV_EXHAUST_BOOST, 
-  EXHAUST_BYPASS, 
-  ENTRYWAY_BYPASS,
-  LR_DUCT_BOOST
-}; 
-
-const char*      BLOWER_NAMES[(NUM_BLOWER_PINS)] = {
-  "HRV Low Exhaust", 
-  "HRV Low Intake", 
-  "HRV High Exhaust",
-  "HRV High Intake", 
-  "HRV Exhaust Boost",
-  "Exhaust Bypass",
-  "Front Entryway Bypass",
-  "Living Room Duct Boost"
-}; 
-
-blower_state_t   BLOWER_STATES[(NUM_BLOWER_PINS)] = {
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF
-}; 
-
-blower_state_t   BLOWER_COMMANDS[(NUM_BLOWER_PINS)] = {
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF,
-  BLOWER_OFF
-};
-
-WebServer server(80);
 
 typedef enum {
   CMD_VENTILATE_HIGH = 'H',
@@ -211,9 +146,10 @@ static volatile long            tempErrors             __attribute__((section(".
 static volatile long            numRebootsPingFailed   __attribute__((section(".uninitialized_data")));
 static volatile long            numRebootsDisconnected __attribute__((section(".uninitialized_data")));
 
-static volatile ventilate_cmd_t ventilateCommand       __attribute__((section(".uninitialized_data")));
+static volatile ventilate_cmd_t hrvCommand             __attribute__((section(".uninitialized_data")));
 static volatile lr_duct_cmd_t   lrDuctCommand          __attribute__((section(".uninitialized_data")));
 static volatile few_duct_cmd_t  fewDuctCommand         __attribute__((section(".uninitialized_data"))); 
+static volatile ac_cmd_t        acCommand              __attribute__((section(".uninitialized_data"))); 
 
 volatile unsigned long startupTime = millis();
 volatile unsigned long connectTime = millis();
@@ -224,23 +160,33 @@ volatile unsigned int consecutiveFailedPings = 0;
 threadkernel_t* CORE_0_KERNEL; 
 threadkernel_t* CORE_1_KERNEL;
 
+volatile char *httpJsonOutput; 
+
 void setup() 
 {
   CORE_0_KERNEL = create_threadkernel(&millis); 
-  CORE_1_KERNEL = create_threadkernel(&millis); 
 
   if (initialize)
   {
     timeBaseMs = 0; 
     powerUpTime = millis(); 
     tempErrors = 0; 
-    ventilateCommand = CMD_VENTILATE_OFF; 
+    hrvCommand = CMD_VENTILATE_OFF; 
     lrDuctCommand = CMD_LR_DUCT_OFF; 
     fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF; 
     numRebootsPingFailed = 0; 
     numRebootsDisconnected = 0; 
     initialize = 0; 
+    acCommand = CMD_AC_OFF; 
   }
+
+  pinMode(CORE_0_ACT, OUTPUT); 
+
+  httpJsonOutput = 0; 
+
+  thermostats.add("lr");  
+  thermostats.add("mb"); 
+  thermostats.add("few"); 
 
   cpu.begin(); 
 
@@ -255,6 +201,8 @@ void setup()
   }
 
   server.on("/", []() {
+    bool success = true; 
+
     for (uint8_t i = 0; i < server.args(); i++) 
     {
       String argName = server.argName(i);
@@ -264,11 +212,11 @@ void setup()
       {
         switch(arg.charAt(0))
         {
-          case 'O':  ventilateCommand = CMD_VENTILATE_OFF;  break;
-          case 'L':  ventilateCommand = CMD_VENTILATE_LOW; break;  
-          case 'M':  ventilateCommand = CMD_VENTILATE_MED; break;  
-          case 'H':  ventilateCommand = CMD_VENTILATE_HIGH; break;  
-          default:  ; 
+          case 'O':  hrvCommand = CMD_VENTILATE_OFF;  break;
+          case 'L':  hrvCommand = CMD_VENTILATE_LOW; break;  
+          case 'M':  hrvCommand = CMD_VENTILATE_MED; break;  
+          case 'H':  hrvCommand = CMD_VENTILATE_HIGH; break;  
+          default:   success = false; 
         }
       }
 
@@ -280,7 +228,7 @@ void setup()
           case 'L':  lrDuctCommand = CMD_LR_DUCT_LOW; break;  
           case 'M':  lrDuctCommand = CMD_LR_DUCT_MED; break;  
           case 'H':  lrDuctCommand = CMD_LR_DUCT_HIGH; break;  
-          default:   ;  
+          default:   success = false;  
         }
       }
 
@@ -290,7 +238,7 @@ void setup()
         {
           case 'O':  fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF;  break;
           case 'H':  fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break;  
-          default:   ;  
+          default:   success = false;  
         }
       }
 
@@ -299,7 +247,7 @@ void setup()
         switch(arg.charAt(0))
         {
           case 'A':  rp2040.rebootToBootloader();  break;
-          default:   ;  
+          default:   success = false;  
         }
       }
 
@@ -308,46 +256,46 @@ void setup()
         switch(arg.charAt(0))
         {
           case 'A':  reboot(); break;
-          default:   ;  
+          default:   success = false;  
+        }
+      }
+
+      if (argName.equals("thset") || argName.equals("thcur") || argName.equals("thcmd")) 
+      {
+        char buffer[strlen(arg.c_str()) + 1]; 
+        strcpy(buffer, arg.c_str()); 
+
+        char* roomName = strtok(buffer, "_");
+        char* argumentStr = strtok(NULL, "_");
+    
+        if (roomName && argumentStr && thermostats.contains(roomName))
+        {
+          Serial.printf("%s: %s %s\r\n", argName.c_str(), roomName, argumentStr); 
+
+          if (argName.equals("thset"))
+            thermostats.get(roomName).setSetPointC(atoff(argumentStr)); 
+          
+          if (argName.equals("thcur"))
+            thermostats.get(roomName).setCurrentTemperatureC(atoff(argumentStr));
+          
+          if (argName.equals("thcmd"))
+            thermostats.get(roomName).setCommand(argumentStr[0] == '1');  
+        }
+        else 
+        {
+          success = false; 
         }
       }
     }
 
+    if (success)
     {
-      char* buffer = (char*)malloc(1024 * sizeof(char));
-      {
-        unsigned long timeMs = millis(); 
-        char* poweredTimeStr = msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime); 
-        char* bootedTimeStr = msToHumanReadableTime(timeMs - startupTime); 
-        char* connectedTimeStr = msToHumanReadableTime(timeMs - connectTime); 
-        sprintf(buffer, STATUS_JSON_FORMAT,
-                TEMPERATURES_C[HRV_INTAKE_INLET_IDX],
-                TEMPERATURES_C[HRV_INTAKE_OUTLET_IDX],
-                TEMPERATURES_C[HRV_EXHAUST_INLET_IDX], 
-                TEMPERATURES_C[HRV_EXHAUST_OUTLET_IDX], 
-                TEMPERATURES_C[INTAKE_IDX],
-                TEMPERATURES_C[LR_OUTLET_IDX],
-                TEMPERATURES_C[FEW_OUTLET_IDX],
-                ventilateCommand,
-                lrDuctCommand,
-                fewDuctCommand,
-                cpu.getTemperature(),
-                tempErrors,
-                lastPingMicros/1000.0,
-                consecutiveFailedPings,
-                getFreeHeap(),
-                poweredTimeStr, 
-                bootedTimeStr,
-                connectedTimeStr,
-                numRebootsPingFailed,
-                numRebootsDisconnected, 
-                WiFi.status());
-        free(poweredTimeStr); 
-        free(bootedTimeStr); 
-        free(connectedTimeStr); 
-      }
+      char * buffer = (char *)httpJsonOutput; 
       server.send(200, "text/json", buffer);
-      free(buffer);
+    }
+    else 
+    {
+      server.send(500, "text/plain", "Failed to parse request.");
     }
   });
 
@@ -355,10 +303,16 @@ void setup()
   server.begin();
   Serial.println("HTTP server started");
   
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_mdnsUpdate, 1000); 
+  CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_mdnsUpdate); 
+  CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_handleClient); 
+
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core0ActOn, 10); 
   CORE_0_KERNEL->add(CORE_0_KERNEL, task_testPing, PING_INTERVAL_MS); 
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_testWiFiConnection, 0); 
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_handleClient, 0); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_testWiFiConnection, 5000); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_processThermostatData, 15000); 
+  //CORE_0_KERNEL->add(CORE_0_KERNEL, task_readTemperatures, SENSOR_READ_INTERVAL_MS); 
+  //CORE_0_KERNEL->add(CORE_0_KERNEL, task_bufferJsonOutput, 2000); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core0ActOff, 10); 
 }
 
 void loop() 
@@ -368,24 +322,224 @@ void loop()
 
 void setup1()
 {
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    pinMode(BLOWER_PINS[i], OUTPUT); 
-  }
+  CORE_1_KERNEL = create_threadkernel(&millis); 
+  pinMode(CORE_1_ACT, OUTPUT); 
 
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    digitalWrite(BLOWER_PINS[i], HIGH);
-  }
+  TEMPERATURES.add("HRV Intake Inlet", HRV_INTAKE_INLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Intake Outlet", HRV_INTAKE_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Exhaust Inlet", HRV_EXHAUST_INLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Exhaust Outlet", HRV_EXHAUST_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("Intake", INTAKE_TEMP_ADDR); 
+  TEMPERATURES.add("Living Room Outlet", LR_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("Front Entryway Outlet", FEW_OUTLET_TEMP_ADDR);
+  TEMPERATURES.discoverSensors();
 
-  CORE_1_KERNEL->add(CORE_1_KERNEL, readTemperatures, SENSOR_READ_INTERVAL_MS); 
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 0); 
+  BLOWERS.add("HRV Low Exhaust", HRV_LOW_EXHAUST, false);
+  BLOWERS.add("HRV Low Intake", HRV_LOW_INTAKE, false);
+  BLOWERS.add("HRV High Exhaust", HRV_HIGH_EXHAUST, false);
+  BLOWERS.add("HRV High Intake", HRV_HIGH_INTAKE, false);
+  BLOWERS.add("HRV Exhaust Boost", HRV_EXHAUST_BOOST, false);
+  BLOWERS.add("Exhaust Bypass", EXHAUST_BYPASS, false);
+  BLOWERS.add("Entryway Bypass", ENTRYWAY_BYPASS, false);
+  BLOWERS.add("Livingroom Duct Boost", LR_DUCT_BOOST, false);
+  BLOWERS.setAll();
+
+  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_processCommands);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core1ActOn, 10); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_readTemperatures, 10000); 
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_bufferJsonOutput, 2000); 
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core1ActOff, 10);
 }
 
 void loop1()
 {
   CORE_1_KERNEL->run(CORE_1_KERNEL); 
+}
+
+void task_core0ActOn()
+{
+  digitalWrite(CORE_0_ACT, 1);
+}
+
+void task_core1ActOn()
+{
+  digitalWrite(CORE_1_ACT, 1);
+}
+
+void task_core0ActOff()
+{
+  digitalWrite(CORE_0_ACT, 0);
+}
+
+void task_core1ActOff()
+{
+  digitalWrite(CORE_1_ACT, 0);
+}
+
+void task_bufferJsonOutput()
+{
+  char *oldJsonBuffer = (char *)httpJsonOutput; 
+  char *jsonBuffer = (char *)malloc(sizeof(char) * 2 * 1024); 
+  unsigned long timeMs = millis(); 
+  char* poweredTimeStr = msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime); 
+  char* bootedTimeStr = msToHumanReadableTime(timeMs - startupTime); 
+  char* connectedTimeStr = msToHumanReadableTime(timeMs - connectTime); 
+  char* acDataUpdatedTimeStr = msToHumanReadableTime(timeMs - acData.updateTimeMs); 
+  char* formattedThermostats = thermostats.toString(); 
+  sprintf(jsonBuffer, STATUS_JSON_FORMAT,
+          acData.evapTempC,
+          acData.outletTempC, 
+          acDataUpdatedTimeStr,
+          acData.command, 
+          acData.state, 
+          acData.fanState, 
+          acData.compressorState,
+          TEMPERATURES.formatTempC(HRV_INTAKE_INLET_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(HRV_INTAKE_OUTLET_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(HRV_EXHAUST_INLET_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(HRV_EXHAUST_OUTLET_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(INTAKE_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(LR_OUTLET_TEMP_ADDR).c_str(),
+          TEMPERATURES.formatTempC(FEW_OUTLET_TEMP_ADDR).c_str(),
+          hrvCommand,
+          lrDuctCommand,
+          fewDuctCommand,
+          cpu.getTemperature(),
+          tempErrors,
+          formattedThermostats, 
+          lastPingMicros/1000.0,
+          consecutiveFailedPings,
+          getFreeHeap(),
+          poweredTimeStr, 
+          bootedTimeStr,
+          connectedTimeStr,
+          numRebootsPingFailed,
+          numRebootsDisconnected, 
+          3);
+  free(poweredTimeStr); 
+  free(bootedTimeStr); 
+  free(connectedTimeStr); 
+  free(formattedThermostats);  
+  free(acDataUpdatedTimeStr);
+  httpJsonOutput = jsonBuffer; 
+  free(oldJsonBuffer); 
+}
+
+void task_processThermostatData()
+{
+  if (acData.isExpired() && !acData.execute())
+  {
+    return; 
+  }
+
+  acCommand = acData.command; 
+
+  Thermostat lr  = thermostats.get("lr"); 
+  Thermostat mb  = thermostats.get("mb"); 
+  Thermostat few = thermostats.get("few"); 
+
+  if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent() || !TEMPERATURES.ready())
+    return;
+
+  if (few.coolingCalledFor())
+  {
+    acCommand = mb.heatCalledFor() 
+      ? ((mb.getMagnitude() >= 0.5) 
+        ? CMD_AC_COOL_LOW : CMD_AC_COOL_MED
+      ) 
+      : CMD_AC_COOL_HIGH; 
+    fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; 
+  }
+  else
+  {
+    fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF; 
+  }
+
+  if (lr.coolingCalledFor())
+  {
+    if (mb.heatCalledFor())
+    {
+      acCommand = (mb.getMagnitude() >= 0.5) ? CMD_AC_COOL_LOW : CMD_AC_COOL_MED; 
+      lrDuctCommand = CMD_LR_DUCT_HIGH; 
+    }
+    else 
+    {
+      acCommand = CMD_AC_COOL_HIGH; 
+      if (lr.getMagnitude() >= 0.5)
+      {
+        lrDuctCommand = CMD_LR_DUCT_HIGH; 
+      }
+      else if (lr.getMagnitude() >= 0.25)
+      {
+        lrDuctCommand = CMD_LR_DUCT_MED; 
+      }
+    }
+  }
+  else 
+  {
+    lrDuctCommand = CMD_LR_DUCT_OFF; 
+  }
+
+  if (mb.coolingCalledFor()) 
+  {
+    if(mb.getMagnitude() >= 1.0 || lr.coolingCalledFor())
+    {
+      acCommand = CMD_AC_COOL_HIGH; 
+    }
+    else if (mb.getMagnitude() >= 0.5)
+    {
+      acCommand = CMD_AC_COOL_MED; 
+    }
+    else if (mb.getMagnitude() >= 0.25)
+    {
+      acCommand = CMD_AC_COOL_LOW; 
+    }
+  }
+
+  bool coolOff = !lr.coolingCalledFor() && !mb.coolingCalledFor() && !few.coolingCalledFor(); 
+
+  if (coolOff)
+  {
+    if (acData.isOutletCold())
+    {
+      acCommand = acData.isCooling() ? CMD_AC_OFF : CMD_AC_FAN; 
+    }
+    else if (acData.isEvapCold())
+    {
+      acCommand = acData.isCooling() ? CMD_AC_OFF : CMD_AC_FAN; 
+    }
+    else
+    {
+      acCommand = CMD_AC_KILL; 
+    }
+
+    if (!acData.isOutletCold() && !acData.isCooling())
+    {
+      if (TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) < 15)
+      {
+        lrDuctCommand = CMD_LR_DUCT_LOW; 
+      }
+      else if (TEMPERATURES.getTempC(LR_OUTLET_TEMP_ADDR) < 15 && TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > 15)
+      {
+        lrDuctCommand = CMD_LR_DUCT_LOW; 
+      }
+      else 
+      {
+        lrDuctCommand = CMD_LR_DUCT_OFF;
+      }
+
+      if (TEMPERATURES.getTempC(FEW_OUTLET_TEMP_ADDR) < 15 && TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > 15)
+      {
+        fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; 
+      }
+    }
+  }
+
+  if (!acData.isCommand(acCommand))
+  {
+    acData.execute(acCommand); 
+  }
 }
 
 void task_handleClient()
@@ -430,23 +584,22 @@ void task_testPing()
 
 void task_processCommands()
 {
-  processCommands(ventilateCommand, lrDuctCommand, fewDuctCommand);
+  processCommands(hrvCommand, lrDuctCommand, fewDuctCommand);
 }
 
 void task_readTemperatures()
 {
-  readTemperatures(); 
+  TEMPERATURES.readSensors();
+}
 
-  for (int i = 0; i < NUM_SENSORS; i++)
-  {
-    Serial.printf("%s: %fC\r\n", SENSOR_NAMES[i], TEMPERATURES_C[i]);
-  }
+void task_printTemperatures()
+{
+  TEMPERATURES.printSensors(); 
 }
 
 void task_updateNextBlower()
 {
-  if (updateNextBlower())
-    printBlowerStates(); 
+  BLOWERS.setNext();
 }
 
 void reboot()
@@ -455,97 +608,48 @@ void reboot()
   rp2040.reboot(); 
 }
 
-unsigned long millisSincePowerOn()
+void processCommands(ventilate_cmd_t hrvCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
 {
-  return timeBaseMs + millis(); 
-}
+  BLOWERS.setCommand(HRV_HIGH_INTAKE, 
+      hrvCommand == CMD_VENTILATE_HIGH 
+      || hrvCommand == CMD_VENTILATE_MED); 
 
+  BLOWERS.setCommand(HRV_LOW_INTAKE, 
+      hrvCommand != CMD_VENTILATE_OFF); 
 
-void processCommands(ventilate_cmd_t ventilateCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
-{
-  setBlower(HRV_HIGH_INTAKE_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || ventilateCommand == CMD_VENTILATE_MED
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(HRV_LOW_INTAKE_IDX, 
-      ventilateCommand != CMD_VENTILATE_OFF 
-      ? BLOWER_ON : BLOWER_OFF); 
-
-  setBlower(HRV_HIGH_EXHAUST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || ventilateCommand == CMD_VENTILATE_MED
+  BLOWERS.setCommand(HRV_HIGH_EXHAUST, 
+      hrvCommand == CMD_VENTILATE_HIGH 
+      || hrvCommand == CMD_VENTILATE_MED
       || (
-        ventilateCommand == CMD_VENTILATE_OFF 
+        hrvCommand == CMD_VENTILATE_OFF 
         && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
+      )); 
 
-  setBlower(HRV_LOW_EXHAUST_IDX, 
-      ventilateCommand != CMD_VENTILATE_OFF
+  BLOWERS.setCommand(HRV_LOW_EXHAUST, 
+      hrvCommand != CMD_VENTILATE_OFF
       || (
-        ventilateCommand == CMD_VENTILATE_OFF 
+        hrvCommand == CMD_VENTILATE_OFF 
         && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
+      )); 
     
-  setBlower(HRV_EXHAUST_BOOST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
+  BLOWERS.setCommand(HRV_EXHAUST_BOOST, 
+      hrvCommand == CMD_VENTILATE_HIGH 
       || (
-        ventilateCommand == CMD_VENTILATE_OFF 
+        hrvCommand == CMD_VENTILATE_OFF 
         && (lrDuctCommand == CMD_LR_DUCT_HIGH || lrDuctCommand == CMD_LR_DUCT_MED)
-      )
-      ? BLOWER_ON : BLOWER_OFF); 
+      )); 
     
-  setBlower(EXHAUST_BYPASS_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || lrDuctCommand != CMD_LR_DUCT_OFF
-      ? BLOWER_ON : BLOWER_OFF); 
+  BLOWERS.setCommand(EXHAUST_BYPASS, 
+      hrvCommand == CMD_VENTILATE_HIGH 
+      || lrDuctCommand != CMD_LR_DUCT_OFF); 
 
-  setBlower(LR_DUCT_BOOST_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || lrDuctCommand == CMD_LR_DUCT_HIGH
-      ? BLOWER_ON : BLOWER_OFF); 
+  BLOWERS.setCommand(LR_DUCT_BOOST, 
+      hrvCommand == CMD_VENTILATE_HIGH 
+      || lrDuctCommand == CMD_LR_DUCT_HIGH); 
 
-  setBlower(FEW_OUTLET_IDX, 
-      ventilateCommand == CMD_VENTILATE_HIGH 
-      || fewDuctCommand == CMD_ENTRYWAY_DUCT_HIGH
-      ? BLOWER_ON : BLOWER_OFF); 
-}
-
-int setBlower(int blowerIndex, blower_state_t state)
-{
-  if (BLOWER_COMMANDS[blowerIndex] != state)
-  {
-    BLOWER_COMMANDS[blowerIndex] = state; 
-    return 1; 
-  }
-
-  return 0; 
-}
-
-int updateNextBlower()
-{
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    if (BLOWER_COMMANDS[i] != BLOWER_STATES[i]) 
-    {
-      digitalWrite(BLOWER_PINS[i], BLOWER_COMMANDS[i] == BLOWER_OFF ? HIGH : LOW); 
-      BLOWER_STATES[i] = BLOWER_COMMANDS[i]; 
-      return 1;
-    }
-  }
-
-  return 0; 
-}
-
-void printBlowerStates()
-{
-  for (int i = 0; i < NUM_BLOWER_PINS; i++)
-  {
-    Serial.printf("[%s=%c>%c]", BLOWER_NAMES[i], BLOWER_COMMANDS[i], BLOWER_STATES[i]); 
-  }
-  Serial.println(""); 
+  BLOWERS.setCommand(ENTRYWAY_BYPASS, 
+      hrvCommand == CMD_VENTILATE_HIGH 
+      || fewDuctCommand == CMD_ENTRYWAY_DUCT_HIGH); 
 }
 
 // WIFI
@@ -608,119 +712,4 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-// TEMP SENSORS
-
-int isTempCValid(float tempC) 
-{
-  return tempC != INVALID_TEMP
-    && tempC == tempC 
-    && tempC < MAX_TEMP_C 
-    && tempC > MIN_TEMP_C; 
-}
-
-void readTemperatures() 
-{
-  printSensorAddresses(); 
-
-  int nSensors = ds.getNumberOfDevices(); 
-  float newTempC[256]; 
-
-  for (int i = 0; i < 256; i++) { newTempC[i] = INVALID_TEMP; }
-  
-  while (ds.selectNext())
-  {
-    uint8_t sensorAddress[8];
-    ds.getAddress(sensorAddress);
-    float reading1C = ds.getTempC(); 
-    float reading2C = ds.getTempC(); 
-    float diff = fabs(reading1C - reading2C); 
-    if (diff < 0.1 && isTempCValid(reading1C))
-    {
-      newTempC[sensorAddress[7]] = reading1C; 
-    }
-    else 
-    {
-      Serial.printf("TEMP ERROR: %f %f\r\n", reading1C, reading2C); 
-      tempErrors++; 
-    }
-  }
-  
-  for (int i = 0; i < NUM_SENSORS; i++)
-  {
-    if (newTempC[TEMP_SENSOR_ADDRESSES[i]] != INVALID_TEMP)
-    {
-      TEMPERATURES_C[i] = newTempC[TEMP_SENSOR_ADDRESSES[i]]; 
-    }
-  }
-}
-
-/* Reads temperature sensors */
-void printSensorAddresses()
-{
-  int nSensors = ds.getNumberOfDevices();
-  if (nSensors == 0)
-  {
-    Serial.println("No sensors detected"); 
-    return; 
-  }
-
-  char buffer[1024]; 
-  buffer[0] = 0; 
-  while (ds.selectNext()) {
-    uint8_t sensorAddress[8];
-    ds.getAddress(sensorAddress);
-    sprintf(buffer + strlen(buffer), "%d ", sensorAddress[7]); 
-  }
-  Serial.println(buffer); 
-}
-
-// Heap 
-
-uint32_t getTotalHeap(void) {
-  extern char __StackLimit, __bss_end__;
-
-  return &__StackLimit - &__bss_end__;
-}
-
-uint32_t getFreeHeap(void) {
-  struct mallinfo m = mallinfo();
-
-  return getTotalHeap() - m.uordblks;
-}
-
-// Util 
-
-char *msToHumanReadableTime(long timeMs)
-{
-  char buffer[1024]; 
-
-  if (timeMs < 1000)
-  {
-    sprintf(buffer, "%dms", timeMs);
-  }
-  else if (timeMs < 60 * 1000)
-  {
-    sprintf(buffer, "%5.2fs", timeMs / 1000.0);
-  }
-  else if (timeMs < 60 * 60 * 1000)
-  {
-    sprintf(buffer, "%5.2fm", timeMs / (60.0 * 1000.0));
-  }
-  else if (timeMs < 24 * 60 * 60 * 1000)
-  {
-    sprintf(buffer, "%5.2fh", timeMs / (60.0 * 60.0 * 1000.0));
-  }
-  else
-  {
-    sprintf(buffer, "%5.2fd", timeMs / (24.0 * 60.0 * 60.0 * 1000.0));
-  }
-
-  int allocChars = strlen(buffer) + 1; 
-
-  char *formattedString = (char *)malloc(allocChars * sizeof(char)); 
-
-  strcpy(formattedString, buffer); 
-
-  return formattedString; 
-}
-
+// AC
