@@ -85,6 +85,9 @@ WebServer server(80);
 AOS::Thermostats thermostats;
 SimplicityAC acData(AC_HOSTNAME); 
 
+const char* LIVING_ROOM    = "lr"; 
+const char* MASTER_BEDROOM = "mb"; 
+const char* FRONT_ENTRYWAY = "few"; 
 const char* STATUS_JSON_FORMAT = 
   "{\n"\
   "  \"acData\":{\n" \
@@ -154,13 +157,15 @@ static volatile ac_cmd_t        acCommand              __attribute__((section(".
 volatile unsigned long startupTime = millis();
 volatile unsigned long connectTime = millis();
 
-volatile unsigned long lastPingMicros = 0; 
-volatile unsigned int consecutiveFailedPings = 0; 
+volatile unsigned long lastPingMicros         = 0; 
+volatile unsigned int  consecutiveFailedPings = 0; 
 
 threadkernel_t* CORE_0_KERNEL; 
 threadkernel_t* CORE_1_KERNEL;
 
 volatile char *httpJsonOutput; 
+
+
 
 void setup() 
 {
@@ -184,9 +189,9 @@ void setup()
 
   httpJsonOutput = 0; 
 
-  thermostats.add("lr");  
-  thermostats.add("mb"); 
-  thermostats.add("few"); 
+  thermostats.add(LIVING_ROOM);  
+  thermostats.add(MASTER_BEDROOM); 
+  thermostats.add(FRONT_ENTRYWAY); 
 
   cpu.begin(); 
 
@@ -220,7 +225,7 @@ void setup()
         }
       }
 
-      if (argName.equals("lr") && arg.length() == 1) 
+      if (argName.equals(LIVING_ROOM) && arg.length() == 1) 
       {
         switch(arg.charAt(0))
         {
@@ -306,13 +311,11 @@ void setup()
   CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_mdnsUpdate); 
   CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_handleClient); 
 
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core0ActOn, 10); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_core0ActOn, 10); 
   CORE_0_KERNEL->add(CORE_0_KERNEL, task_testPing, PING_INTERVAL_MS); 
   CORE_0_KERNEL->add(CORE_0_KERNEL, task_testWiFiConnection, 5000); 
   CORE_0_KERNEL->add(CORE_0_KERNEL, task_processThermostatData, 15000); 
-  //CORE_0_KERNEL->add(CORE_0_KERNEL, task_readTemperatures, SENSOR_READ_INTERVAL_MS); 
-  //CORE_0_KERNEL->add(CORE_0_KERNEL, task_bufferJsonOutput, 2000); 
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_core0ActOff, 10); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_core0ActOff, 10); 
 }
 
 void loop() 
@@ -382,15 +385,10 @@ void task_bufferJsonOutput()
   char *oldJsonBuffer = (char *)httpJsonOutput; 
   char *jsonBuffer = (char *)malloc(sizeof(char) * 2 * 1024); 
   unsigned long timeMs = millis(); 
-  char* poweredTimeStr = msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime); 
-  char* bootedTimeStr = msToHumanReadableTime(timeMs - startupTime); 
-  char* connectedTimeStr = msToHumanReadableTime(timeMs - connectTime); 
-  char* acDataUpdatedTimeStr = msToHumanReadableTime(timeMs - acData.updateTimeMs); 
-  char* formattedThermostats = thermostats.toString(); 
   sprintf(jsonBuffer, STATUS_JSON_FORMAT,
           acData.evapTempC,
           acData.outletTempC, 
-          acDataUpdatedTimeStr,
+          msToHumanReadableTime(timeMs - acData.updateTimeMs).c_str(),
           acData.command, 
           acData.state, 
           acData.fanState, 
@@ -407,21 +405,16 @@ void task_bufferJsonOutput()
           fewDuctCommand,
           cpu.getTemperature(),
           tempErrors,
-          formattedThermostats, 
+          thermostats.toString().c_str(), 
           lastPingMicros/1000.0,
           consecutiveFailedPings,
           getFreeHeap(),
-          poweredTimeStr, 
-          bootedTimeStr,
-          connectedTimeStr,
+          msToHumanReadableTime((timeBaseMs + timeMs) - powerUpTime).c_str(), 
+          msToHumanReadableTime(timeMs - startupTime).c_str(),
+          msToHumanReadableTime(timeMs - connectTime).c_str(),
           numRebootsPingFailed,
           numRebootsDisconnected, 
           3);
-  free(poweredTimeStr); 
-  free(bootedTimeStr); 
-  free(connectedTimeStr); 
-  free(formattedThermostats);  
-  free(acDataUpdatedTimeStr);
   httpJsonOutput = jsonBuffer; 
   free(oldJsonBuffer); 
 }
@@ -435,9 +428,9 @@ void task_processThermostatData()
 
   acCommand = acData.command; 
 
-  Thermostat lr  = thermostats.get("lr"); 
-  Thermostat mb  = thermostats.get("mb"); 
-  Thermostat few = thermostats.get("few"); 
+  Thermostat lr  = thermostats.get(LIVING_ROOM); 
+  Thermostat mb  = thermostats.get(MASTER_BEDROOM); 
+  Thermostat few = thermostats.get(FRONT_ENTRYWAY); 
 
   if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent() || !TEMPERATURES.ready())
     return;
