@@ -47,6 +47,9 @@ using AOS::Thermostats;
 using AOS::TemperatureSensors;
 using AOS::Ping; 
 
+#define COOLING_TIME_BEFORE_ACCLIMATE 60 * 60 * 1000
+#define ACCLIMATE_TIME_WHEN_COOLING 5 * 60 * 1000
+
 #define HRV_LOW_EXHAUST  6
 #define HRV_LOW_INTAKE   7
 #define HRV_HIGH_EXHAUST 8
@@ -122,6 +125,7 @@ static volatile double                  ductIntakeHumidity  __attribute__((secti
 static volatile double                  roomHumidity        __attribute__((section(".uninitialized_data")));
 
 volatile long coolOnTime = millis(); 
+volatile long acclimateOnTimeMs = millis(); 
 
 unsigned long coolingForMs()
 {
@@ -323,6 +327,21 @@ void task_pollACData()
   }
 }
 
+bool stateIsAcclimate()
+{
+  return state == DST_ACCLIMATE_HIGH || state == DST_ACCLIMATE_MED || state == DST_ACCLIMATE_LOW; 
+}
+
+bool stateIsAcclimateDone()
+{
+  return state == DST_ACCLIMATE_DONE; 
+}
+
+unsigned long acclimateOnForMs()
+{
+  return stateIsAcclimate() ? millis() - acclimateOnTimeMs : 0;
+}
+
 system_cooling_state_t computeState()
 {
   Serial.printf("computeState(): enter\r\n"); 
@@ -354,9 +373,15 @@ system_cooling_state_t computeState()
     return state; 
   }
 
+  unsigned long timeMs = millis(); 
   if (!acData.isCooling())
   {
-    coolOnTime = millis(); 
+    coolOnTime = timeMs; 
+  }
+
+  if (!stateIsAcclimate())
+  {
+    acclimateOnTimeMs = timeMs; 
   }
 
   Serial.printf("computeState(): proceeding\r\n"); 
@@ -368,11 +393,11 @@ system_cooling_state_t computeState()
 
   Serial.printf("computeState(): evapTempC=%f outletTempC=%f ductIntakeTempC=%f\r\n", evapTempC, outletTempC, ductIntakeTempC); 
 
-  bool needsClimatization = 
+  bool needsAcclimation = 
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
-    || (coolingForMs() > 60 * 60 * 1000) || (state == DST_IDLE && outletTempC < 15); 
+    || (coolingForMs() > COOLING_TIME_BEFORE_ACCLIMATE) || (state == DST_IDLE && outletTempC < 15); 
 
-  if (state == DST_ACCLIMATE_HIGH || state == DST_ACCLIMATE_MED || state == DST_ACCLIMATE_LOW)
+  if (stateIsAcclimate())
   {
     ductIntakeHumidity = calculate_relative_humidity(ductIntakeTempC, evapTempC); 
     outletHumidity = calculate_relative_humidity(outletTempC, evapTempC);
@@ -381,7 +406,11 @@ system_cooling_state_t computeState()
     roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
     Serial.printf("computeState(): roomHumidity=%f roomTemperatureC=%f\r\n", roomHumidity, roomTemperatureC); 
     
-    if (
+    if (thermostats.coolingCalledFor() && acclimateOnForMs() > ACCLIMATE_TIME_WHEN_COOLING)
+    {
+      return DST_ACCLIMATE_DONE; 
+    }
+    else if (
       ductIntakeHumidity < 80.0 && ductIntakeHumidity > 20.0
       && outletHumidity < 80.0 && outletHumidity > 20.0
     )
@@ -393,8 +422,13 @@ system_cooling_state_t computeState()
       return state; 
     }
   }
-  else if (needsClimatization)
+  else if (needsAcclimation)
   {
+    if (thermostats.coolingCalledFor() && thermostats.getMaxCoolingMagnitude() > 2.0)
+    {
+      return DST_ACCLIMATE_HIGH;
+    }
+
     switch(acCommand)
     {
       case CMD_AC_COOL_HIGH: return DST_ACCLIMATE_HIGH; break; 
@@ -452,9 +486,7 @@ system_cooling_state_t computeState()
 
 void task_handleClient()
 {
-  //Serial.println("Enter task_handleClient");
   server.handleClient(); 
-  //Serial.println("Leave task_handleClient");
 }
 
 void task_processCommands()
@@ -462,6 +494,11 @@ void task_processCommands()
   Serial.println("Enter task_processCommands");
   state = computeState(); 
   Serial.printf("Leave computeState: %c\r\n", state);
+  if (stateIsAcclimateDone())
+  { 
+    state = computeState(); 
+    Serial.printf("Leave computeState: %c\r\n", state);
+  }
   computeACCommand(state); 
   Serial.println("Leave computeACCommand");
   processCommands(state, hrvCommand, lrDuctCommand, fewDuctCommand);
