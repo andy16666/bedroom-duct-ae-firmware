@@ -20,6 +20,8 @@
     Author: Andrew Somerville <andy16666@gmail.com> 
     GitHub: andy16666
  */
+#include <OneWire.h>
+#include <Arduino.h>
 
 #include <stdint.h>
 #include <float.h>
@@ -55,7 +57,7 @@ using AOS::Ping;
 #define ENTRYWAY_BYPASS   12
 #define LR_DUCT_BOOST     13
 
-#define TRANSITION_TIME_MS 2000
+#define TRANSITION_TIME_MS 5000
 
 #define HRV_INTAKE_INLET_TEMP_ADDR  139
 #define HRV_INTAKE_OUTLET_TEMP_ADDR 131
@@ -73,6 +75,8 @@ AOS::Thermostats thermostats;
 const char* LIVING_ROOM    = "lr"; 
 const char* MASTER_BEDROOM = "mb"; 
 const char* FRONT_ENTRYWAY = "few"; 
+
+extern SimplicityACResponse& responseRef; 
 
 typedef enum {
   CMD_VENTILATE_HIGH = 'H',
@@ -93,15 +97,36 @@ typedef enum {
   CMD_ENTRYWAY_DUCT_OFF  = 'O'
 } few_duct_cmd_t;
 
-static volatile ventilate_cmd_t hrvCommand             __attribute__((section(".uninitialized_data")));
-static volatile lr_duct_cmd_t   lrDuctCommand          __attribute__((section(".uninitialized_data")));
-static volatile few_duct_cmd_t  fewDuctCommand         __attribute__((section(".uninitialized_data"))); 
-static volatile ac_cmd_t        acCommand              __attribute__((section(".uninitialized_data"))); 
-static volatile double          outletHumidity         __attribute__((section(".uninitialized_data")));
-static volatile double          ductIntakeHumidity     __attribute__((section(".uninitialized_data")));
-static volatile double          roomHumidity           __attribute__((section(".uninitialized_data")));
+typedef enum {
+  DST_IDLE = 'I', 
+  DST_COOL_FEW = 'F', 
+  DST_COOL_MB_HIGH = 'h', 
+  DST_COOL_MB_MED  = 'm', 
+  DST_COOL_MB_LOW  = 'l', 
+  DST_COOL_MB_LR_HIGH = 'H', 
+  DST_COOL_MB_LR_MED  = 'M', 
+  DST_COOL_MB_LR_LOW  = 'L',
+  DST_ACCLIMATE_HIGH = 'c',
+  DST_ACCLIMATE_MED  = 'b',
+  DST_ACCLIMATE_LOW  = 'a',
+  DST_ACCLIMATE_DONE  = 'd'
+} system_cooling_state_t; 
 
-volatile long coolingOffMs = millis(); 
+static volatile ventilate_cmd_t         hrvCommand          __attribute__((section(".uninitialized_data")));
+static volatile lr_duct_cmd_t           lrDuctCommand       __attribute__((section(".uninitialized_data")));
+static volatile few_duct_cmd_t          fewDuctCommand      __attribute__((section(".uninitialized_data"))); 
+static volatile system_cooling_state_t  state               __attribute__((section(".uninitialized_data"))); 
+static volatile ac_cmd_t                acCommand           __attribute__((section(".uninitialized_data"))); 
+static volatile double                  outletHumidity      __attribute__((section(".uninitialized_data")));
+static volatile double                  ductIntakeHumidity  __attribute__((section(".uninitialized_data")));
+static volatile double                  roomHumidity        __attribute__((section(".uninitialized_data")));
+
+volatile long coolOnTime = millis(); 
+
+unsigned long coolingForMs()
+{
+  return acData.isSet() && acData.isCooling() ? millis() - coolOnTime : 0; 
+}
 
 const char* generateHostname()
 {
@@ -117,6 +142,7 @@ void aosInitialize()
   outletHumidity = 0; 
   ductIntakeHumidity = 0;
   roomHumidity = 0; 
+  state = DST_IDLE; 
 }
 
 void aosSetup()
@@ -218,8 +244,11 @@ void aosSetup()
 
     if (success)
     {
-      
-      server.send(200, "text/json", httpResponseString);
+      String& responseString = httpResponseString; 
+      if (responseString.length() > 0 && responseString.startsWith("{") && responseString.endsWith("}"))
+        server.send(200, "text/json", responseString);
+      else 
+        server.send(500, "text/plain", "Invalid return string.");
     }
     else 
     {
@@ -232,8 +261,7 @@ void aosSetup()
   Serial.println("HTTP server started");
   
   CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_handleClient); 
-
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_processThermostatData, 15000); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, AC_DATA_EXPIRY_TIME_MS/2); 
 }
 
 void aosSetup1()
@@ -245,6 +273,7 @@ void aosSetup1()
   TEMPERATURES.add("Intake", "intakeTempC", INTAKE_TEMP_ADDR); 
   TEMPERATURES.add("Living Room Outlet", "lrOutletTempC", LR_OUTLET_TEMP_ADDR); 
   TEMPERATURES.add("Front Entryway Outlet", "fewOutletTempC", FEW_OUTLET_TEMP_ADDR);
+  TEMPERATURES.discoverSensors();
 
   BLOWERS.add("HRV Low Exhaust", HRV_LOW_EXHAUST, false);
   BLOWERS.add("HRV Low Intake", HRV_LOW_INTAKE, false);
@@ -256,178 +285,187 @@ void aosSetup1()
   BLOWERS.add("Livingroom Duct Boost", LR_DUCT_BOOST, false);
   BLOWERS.setAll();
 
-  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_processCommands);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseACData, AC_DATA_EXPIRY_TIME_MS/4);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, AC_DATA_EXPIRY_TIME_MS/4);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
 
 void populateHttpResponse(JSONVar& document) 
 {
   document["intakeHumidity"] = ductIntakeHumidity; 
-
   document["hrvCommand"] = String((char)hrvCommand).c_str();
   document["lrDuctCommand"] = String((char)lrDuctCommand).c_str();
   document["fewDuctCommand"] = String((char)fewDuctCommand).c_str();
   document["acCommand"] = String((char)acCommand).c_str();
-
-  acData.addTo(AC_HOSTNAME, document); 
-  document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
-  document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
-
-  thermostats.addTo("thermostats", document); 
+  document["state"] = String((char)state).c_str();
+  document["coolingForMs"] = coolingForMs(); 
+  document["timeMs"] = millis(); 
+  //if (acData.isSet())
+  {
+    acData.addTo(AC_HOSTNAME, document); 
+    document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
+    document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
+  }
+  if (thermostats.isCurrent())
+    thermostats.addTo("thermostats", document); 
 }
 
-void task_processThermostatData()
+void task_parseACData()
 {
-  if (acData.isExpired() && !acData.execute())
+  acData.parse();
+}
+
+void task_pollACData()
+{
+  //if (!acData.hasUnparsedResponse())
   {
-    return; 
+    acData.execute(acCommand);
+  }
+}
+
+system_cooling_state_t computeState()
+{
+  Serial.printf("computeState(): enter\r\n"); 
+
+  if (!acData.isSet() || !TEMPERATURES.ready())
+  {
+    return state; 
   }
 
-  acCommand = acData.command; 
+  if (!thermostats.contains(LIVING_ROOM) || !thermostats.contains(MASTER_BEDROOM) || !thermostats.contains(FRONT_ENTRYWAY))
+  {
+    return state; 
+  }
+
+  if (!acData.isEvapTempValid() || !acData.isOutletTempValid())
+    return state;
 
   Thermostat lr  = thermostats.get(LIVING_ROOM); 
   Thermostat mb  = thermostats.get(MASTER_BEDROOM); 
   Thermostat few = thermostats.get(FRONT_ENTRYWAY); 
 
-  if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent() || !TEMPERATURES.ready())
-    return;
-
-  if (few.coolingCalledFor())
+  if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent())
   {
-    acCommand = mb.heatCalledFor() 
-      ? ((mb.getMagnitude() >= 0.5) 
-        ? CMD_AC_COOL_LOW : CMD_AC_COOL_MED
-      ) 
-      : CMD_AC_COOL_HIGH; 
-    fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; 
-  }
-  else
-  {
-    fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF; 
+    return state; 
   }
 
-  if (lr.coolingCalledFor())
+  if (!TEMPERATURES.isTempValid(INTAKE_TEMP_ADDR))
   {
-    if (mb.heatCalledFor())
+    return state; 
+  }
+
+  if (!acData.isCooling())
+  {
+    coolOnTime = millis(); 
+  }
+
+  Serial.printf("computeState(): proceeding\r\n"); 
+
+  double evapTempC = acData.getEvapTempC(); 
+  double outletTempC = acData.getOutletTempC(); 
+  double ductIntakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR);
+  double roomTemperatureC = thermostats.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
+
+  Serial.printf("computeState(): evapTempC=%f outletTempC=%f ductIntakeTempC=%f\r\n", evapTempC, outletTempC, ductIntakeTempC); 
+
+  bool needsClimatization = 
+    ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
+    || (coolingForMs() > 60 * 60 * 1000) || (state == DST_IDLE && outletTempC < 15); 
+
+  if (state == DST_ACCLIMATE_HIGH || state == DST_ACCLIMATE_MED || state == DST_ACCLIMATE_LOW)
+  {
+    ductIntakeHumidity = calculate_relative_humidity(ductIntakeTempC, evapTempC); 
+    outletHumidity = calculate_relative_humidity(outletTempC, evapTempC);
+    Serial.printf("computeState(): ductIntakeHumidity=%f outletHumidity=%f\r\n", ductIntakeHumidity, outletHumidity); 
+    
+    roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
+    Serial.printf("computeState(): roomHumidity=%f roomTemperatureC=%f\r\n", roomHumidity, roomTemperatureC); 
+    
+    if (
+      ductIntakeHumidity < 80.0 && ductIntakeHumidity > 20.0
+      && outletHumidity < 80.0 && outletHumidity > 20.0
+    )
     {
-      acCommand = (mb.getMagnitude() >= 0.5) ? CMD_AC_COOL_LOW : CMD_AC_COOL_MED; 
-      lrDuctCommand = CMD_LR_DUCT_HIGH; 
+      return DST_ACCLIMATE_DONE; 
     }
     else 
     {
-      acCommand = CMD_AC_COOL_HIGH; 
-      if (lr.getMagnitude() >= 0.5)
-      {
-        lrDuctCommand = CMD_LR_DUCT_HIGH; 
-      }
-      else if (lr.getMagnitude() >= 0.25)
-      {
-        lrDuctCommand = CMD_LR_DUCT_MED; 
-      }
+      return state; 
     }
   }
-  else 
+  else if (needsClimatization)
   {
-    lrDuctCommand = CMD_LR_DUCT_OFF; 
+    switch(acCommand)
+    {
+      case CMD_AC_COOL_HIGH: return DST_ACCLIMATE_HIGH; break; 
+      case CMD_AC_COOL_MED:  return DST_ACCLIMATE_MED;  break; 
+      case CMD_AC_COOL_LOW:  return DST_ACCLIMATE_LOW;  break; 
+      default: return DST_ACCLIMATE_LOW; break; 
+    }
   }
-
-  if (mb.coolingCalledFor()) 
+  else if (mb.coolingCalledFor()) 
   {
     if(mb.getMagnitude() >= 1.0 || lr.coolingCalledFor())
     {
-      acCommand = CMD_AC_COOL_HIGH; 
-    }
-    else if (mb.getMagnitude() >= 0.5)
-    {
-      acCommand = CMD_AC_COOL_MED; 
+      return DST_COOL_MB_HIGH; 
     }
     else if (mb.getMagnitude() >= 0.25)
     {
-      acCommand = CMD_AC_COOL_LOW; 
-    }
-  }
-
-  bool coolOff = !lr.coolingCalledFor() && !mb.coolingCalledFor() && !few.coolingCalledFor(); 
-
-  if (coolOff)
-  {
-    if (acData.isCooling())
-    {
-      coolingOffMs = millis(); 
-    }
-
-    boolean coolingOffForMs = millis() - coolingOffMs; 
-
-    bool cmdACFanOn = acData.isOutletCold() || acData.isCooling(); 
-    bool cmdDuctFanOn = !acData.isOutletCold() && !acData.isCooling(); 
-    if (!acData.isCooling() && acData.isFanRunning() && TEMPERATURES.isTempValid(INTAKE_TEMP_ADDR))
-    {
-      double ductIntakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR);
-      if (acData.isEvapTempValid())
-      {
-        double evapTempC = acData.getEvapTempC(); 
-        ductIntakeHumidity = calculate_relative_humidity(ductIntakeTempC, evapTempC); 
-        cmdDuctFanOn = cmdDuctFanOn || ductIntakeHumidity > 75.0;  
-        if (acData.isOutletTempValid())
-        {
-          double outletTempC = acData.getOutletTempC(); 
-          outletHumidity = calculate_relative_humidity(outletTempC, evapTempC);
-          
-          cmdACFanOn   = cmdACFanOn || outletTempC < evapTempC || outletHumidity > 75.0; 
-        }
-
-        if (thermostats.contains(MASTER_BEDROOM) && thermostats.get(MASTER_BEDROOM).isCurrent())
-        {
-          double roomTemperatureC = thermostats.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
-          roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
-        }
-      } 
-    }
-
-    cmdACFanOn = cmdACFanOn 
-        || coolingOffForMs < 30000 
-        || ductIntakeHumidity <= 0 
-        || outletHumidity <= 0 
-        || roomHumidity <= 0;
-    cmdDuctFanOn = cmdDuctFanOn 
-        || cmdACFanOn
-        || (TEMPERATURES.getTempC(LR_OUTLET_TEMP_ADDR) < 15 && TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > 15)
-        || TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) < 15;
-
-    if (cmdACFanOn)
-    {
-      acCommand = acData.isCooling() ? CMD_AC_OFF : CMD_AC_FAN_LOW; 
+      return DST_COOL_MB_MED; 
     }
     else
     {
-      acCommand = CMD_AC_KILL; 
-    }
-
-    if (cmdDuctFanOn)
-    {
-      lrDuctCommand = CMD_LR_DUCT_LOW; 
-    }
-
-    if (TEMPERATURES.getTempC(FEW_OUTLET_TEMP_ADDR) < 15 && TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > 15)
-    {
-      fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; 
+      return DST_COOL_MB_LOW; 
     }
   }
-
-  if (!acData.isCommand(acCommand))
+  else if (lr.coolingCalledFor())
   {
-    acData.execute(acCommand); 
+    if (mb.heatCalledFor())
+    {
+      return (mb.getMagnitude() >= 0.5) ? DST_COOL_MB_LR_LOW : DST_COOL_MB_LR_MED; 
+    }
+    else 
+    {
+      if (lr.getMagnitude() >= 0.5)
+      {
+        return DST_COOL_MB_LR_HIGH; 
+      }
+      else if (lr.getMagnitude() >= 0.25)
+      {
+        return DST_COOL_MB_LR_MED; 
+      }
+      else
+      {
+        return DST_COOL_MB_LR_LOW;
+      }
+    }
+  }
+  else if (few.coolingCalledFor())
+  {
+    return DST_COOL_FEW; 
+  }
+  else 
+  {
+    return DST_IDLE; 
   }
 }
 
 void task_handleClient()
 {
+  //Serial.println("Enter task_handleClient");
   server.handleClient(); 
+  //Serial.println("Leave task_handleClient");
 }
 
 void task_processCommands()
 {
-  processCommands(hrvCommand, lrDuctCommand, fewDuctCommand);
+  Serial.println("Enter task_processCommands");
+  state = computeState(); 
+  Serial.printf("Leave computeState: %c\r\n", state);
+  computeACCommand(state); 
+  Serial.println("Leave computeACCommand");
+  processCommands(state, hrvCommand, lrDuctCommand, fewDuctCommand);
+  Serial.println("Leave processCommands");
 }
 
 void task_updateNextBlower()
@@ -435,8 +473,71 @@ void task_updateNextBlower()
   BLOWERS.setNext();
 }
 
-void processCommands(ventilate_cmd_t hrvCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
+void computeACCommand(system_cooling_state_t state)
 {
+  switch (state) 
+  {
+    case DST_IDLE:           
+      acCommand = (acCommand == CMD_AC_OFF ? CMD_AC_KILL : CMD_AC_OFF); 
+      break; 
+    case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
+    case DST_COOL_FEW:        acCommand = CMD_AC_COOL_MED;  break; 
+    case DST_COOL_MB_HIGH:    acCommand = CMD_AC_COOL_HIGH; break; 
+    case DST_COOL_MB_MED:     acCommand = CMD_AC_COOL_MED;  break; 
+    case DST_COOL_MB_LOW:     acCommand = CMD_AC_COOL_LOW;  break; 
+    case DST_COOL_MB_LR_HIGH: acCommand = CMD_AC_COOL_HIGH; break; 
+    case DST_COOL_MB_LR_MED:  acCommand = CMD_AC_COOL_HIGH; break; 
+    case DST_COOL_MB_LR_LOW:  acCommand = CMD_AC_COOL_MED;  break; 
+    case DST_ACCLIMATE_HIGH:  acCommand = CMD_AC_FAN_HIGH;  break;     
+    case DST_ACCLIMATE_MED:   acCommand = CMD_AC_FAN_MED;   break;     
+    case DST_ACCLIMATE_LOW:   acCommand = CMD_AC_FAN_LOW;   break;   
+  }
+}
+
+void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
+{
+  switch (state) 
+  {
+    case DST_COOL_FEW:        break; 
+    case DST_COOL_MB_HIGH:    hrvCommand = CMD_VENTILATE_HIGH; break; 
+    case DST_COOL_MB_MED:     hrvCommand = CMD_VENTILATE_MED;  break; 
+    case DST_COOL_MB_LOW:     break; 
+    case DST_COOL_MB_LR_HIGH: hrvCommand = CMD_VENTILATE_OFF; break; 
+    case DST_COOL_MB_LR_MED:  hrvCommand = CMD_VENTILATE_OFF; break; 
+    case DST_COOL_MB_LR_LOW:  hrvCommand = CMD_VENTILATE_OFF; break; 
+    case DST_ACCLIMATE_HIGH:  hrvCommand = CMD_VENTILATE_OFF; break;     
+    case DST_ACCLIMATE_MED:   break;     
+    case DST_ACCLIMATE_LOW:   break;   
+  }
+
+  switch (state) 
+  {
+    case DST_COOL_FEW:        break; 
+    case DST_COOL_MB_HIGH:    break; 
+    case DST_COOL_MB_MED:     break; 
+    case DST_COOL_MB_LOW:     break; 
+    case DST_COOL_MB_LR_HIGH: lrDuctCommand = CMD_LR_DUCT_HIGH;  break; 
+    case DST_COOL_MB_LR_MED:  lrDuctCommand = CMD_LR_DUCT_HIGH;  break; 
+    case DST_COOL_MB_LR_LOW:  lrDuctCommand = CMD_LR_DUCT_MED;   break; 
+    case DST_ACCLIMATE_HIGH:  lrDuctCommand = CMD_LR_DUCT_MED;   break;     
+    case DST_ACCLIMATE_MED:   lrDuctCommand = CMD_LR_DUCT_MED;   break;     
+    case DST_ACCLIMATE_LOW:   lrDuctCommand = CMD_LR_DUCT_LOW;   break;   
+  }
+
+  switch (state) 
+  {
+    case DST_COOL_FEW:        fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break; 
+    case DST_COOL_MB_HIGH:    break; 
+    case DST_COOL_MB_MED:     break; 
+    case DST_COOL_MB_LOW:     break; 
+    case DST_COOL_MB_LR_HIGH: fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break; 
+    case DST_COOL_MB_LR_MED:  break; 
+    case DST_COOL_MB_LR_LOW:  break; 
+    case DST_ACCLIMATE_HIGH:  fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break;     
+    case DST_ACCLIMATE_MED:   break;     
+    case DST_ACCLIMATE_LOW:   break;   
+  }
+
   BLOWERS.setCommand(HRV_HIGH_INTAKE, 
       hrvCommand == CMD_VENTILATE_HIGH 
       || hrvCommand == CMD_VENTILATE_MED); 
@@ -495,5 +596,3 @@ void handleNotFound() {
 
   server.send(404, "text/plain", message);
 }
-
-// AC
