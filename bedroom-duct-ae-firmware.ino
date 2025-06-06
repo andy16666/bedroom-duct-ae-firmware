@@ -248,7 +248,12 @@ void aosSetup()
 
     if (success)
     {
+      while(xSemaphoreTakeRecursive( networkMutex, portMAX_DELAY ) != pdTRUE)
+      {
+        Serial.println("httpAccept waiting"); 
+      }
       String& responseString = httpResponseString; 
+      xSemaphoreGiveRecursive(networkMutex); 
       if (responseString.length() > 0 && responseString.startsWith("{") && responseString.endsWith("}"))
         server.send(200, "text/json", responseString);
       else 
@@ -304,14 +309,16 @@ void populateHttpResponse(JSONVar& document)
   document["state"] = String((char)state).c_str();
   document["coolingForMs"] = coolingForMs(); 
   document["timeMs"] = millis(); 
-  //if (acData.isSet())
+  if (acData.isSet())
   {
     acData.addTo(AC_HOSTNAME, document); 
     document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
     document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
   }
   if (thermostats.isCurrent())
+  {
     thermostats.addTo("thermostats", document); 
+  }
 }
 
 void task_parseACData()
@@ -321,10 +328,7 @@ void task_parseACData()
 
 void task_pollACData()
 {
-  //if (!acData.hasUnparsedResponse())
-  {
-    acData.execute(acCommand);
-  }
+  acData.execute(acCommand);
 }
 
 bool stateIsAcclimate()
