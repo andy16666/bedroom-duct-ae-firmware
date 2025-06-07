@@ -20,8 +20,9 @@
     Author: Andrew Somerville <andy16666@gmail.com> 
     GitHub: andy16666
  */
-#include <OneWire.h>
 #include <Arduino.h>
+#include <OneWire.h>
+#include <DS18B20.h>
 
 #include <stdint.h>
 #include <float.h>
@@ -47,8 +48,8 @@ using AOS::Thermostats;
 using AOS::TemperatureSensors;
 using AOS::Ping; 
 
-#define COOLING_TIME_BEFORE_ACCLIMATE 60 * 60 * 1000
-#define ACCLIMATE_TIME_WHEN_COOLING 5 * 60 * 1000
+#define COOLING_TIME_BEFORE_ACCLIMATE 30 * 60 * 1000
+#define ACCLIMATE_TIME_WHEN_COOLING    2 * 60 * 1000
 
 #define HRV_LOW_EXHAUST  6
 #define HRV_LOW_INTAKE   7
@@ -154,17 +155,37 @@ void aosSetup()
   thermostats.add(LIVING_ROOM);  
   thermostats.add(MASTER_BEDROOM); 
   thermostats.add(FRONT_ENTRYWAY); 
+  TEMPERATURES.add("HRV Intake Inlet", "hrvIntakeInletTempC", HRV_INTAKE_INLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Intake Outlet", "hrvIntakeOutletTempC", HRV_INTAKE_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Exhaust Inlet", "hrvExhaustInletTempC", HRV_EXHAUST_INLET_TEMP_ADDR); 
+  TEMPERATURES.add("HRV Exhaust Outlet", "hrvExhaustOutletTempC", HRV_EXHAUST_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("Intake", "intakeTempC", INTAKE_TEMP_ADDR); 
+  TEMPERATURES.add("Living Room Outlet", "lrOutletTempC", LR_OUTLET_TEMP_ADDR); 
+  TEMPERATURES.add("Front Entryway Outlet", "fewOutletTempC", FEW_OUTLET_TEMP_ADDR);
 
-  server.begin();
+  
+  BLOWERS.add("HRV Low Exhaust", HRV_LOW_EXHAUST, false);
+  BLOWERS.add("HRV Low Intake", HRV_LOW_INTAKE, false);
+  BLOWERS.add("HRV High Exhaust", HRV_HIGH_EXHAUST, false);
+  BLOWERS.add("HRV High Intake", HRV_HIGH_INTAKE, false);
+  BLOWERS.add("HRV Exhaust Boost", HRV_EXHAUST_BOOST, false);
+  BLOWERS.add("Exhaust Bypass", EXHAUST_BYPASS, false);
+  BLOWERS.add("Entryway Bypass", ENTRYWAY_BYPASS, false);
+  BLOWERS.add("Livingroom Duct Boost", LR_DUCT_BOOST, false);
+  BLOWERS.init(); 
+  BLOWERS.setAll();
 
   server.on("/", []() {
     bool success = true; 
+    //Serial.println("Enter / handler"); Serial.flush(); 
 
     for (uint8_t i = 0; i < server.args(); i++) 
     {
       String argName = server.argName(i);
       String arg = server.arg(i);
       bool success = false; 
+
+      //Serial.println("/ handler: parse hrv"); Serial.flush(); 
 
       if (argName.equals("hrv") && arg.length() == 1) 
       {
@@ -178,7 +199,9 @@ void aosSetup()
         }
       }
 
-      if (argName.equals(LIVING_ROOM) && arg.length() == 1) 
+      //Serial.println("/ handler: parse lr"); Serial.flush(); 
+
+      if (argName.equals("lr") && arg.length() == 1) 
       {
         switch(arg.charAt(0))
         {
@@ -190,6 +213,8 @@ void aosSetup()
         }
       }
 
+      //Serial.println("/ handler: parse ew"); Serial.flush(); 
+
       if (argName.equals("ew") && arg.length() == 1) 
       {
         switch(arg.charAt(0))
@@ -200,6 +225,8 @@ void aosSetup()
         }
       }
 
+      //Serial.println("/ handler: parse bootloader"); Serial.flush(); 
+
       if (argName.equals("bootloader") && arg.length() == 1) 
       {
         switch(arg.charAt(0))
@@ -209,6 +236,9 @@ void aosSetup()
         }
       }
 
+      //Serial.println("/ handler: parse reboot"); Serial.flush(); 
+
+
       if (argName.equals("reboot") && arg.length() == 1) 
       {
         switch(arg.charAt(0))
@@ -217,6 +247,9 @@ void aosSetup()
           default:   success = false;  
         }
       }
+
+      //Serial.println("/ handler: parse th"); Serial.flush(); 
+
 
       if (argName.equals("thset") || argName.equals("thcur") || argName.equals("thcmd")) 
       {
@@ -228,7 +261,7 @@ void aosSetup()
     
         if (roomName && argumentStr && thermostats.contains(roomName))
         {
-          Serial.printf("%s: %s %s\r\n", argName.c_str(), roomName, argumentStr); 
+          //Serial.printf("%s: %s %s\r\n", argName.c_str(), roomName, argumentStr); 
 
           if (argName.equals("thset"))
             thermostats.get(roomName).setSetPointC(atoff(argumentStr)); 
@@ -248,58 +281,51 @@ void aosSetup()
 
     if (success)
     {
+      //Serial.println("/ handler: success, get lock"); Serial.flush(); 
+
       while(xSemaphoreTakeRecursive( networkMutex, portMAX_DELAY ) != pdTRUE)
       {
-        Serial.println("httpAccept waiting"); 
+        //Serial.println("httpAccept waiting");  Serial.flush(); 
       }
-      String& responseString = httpResponseString; 
+      String responseString = httpResponseString[0] ? String((char *)httpResponseString) : String("Loading..."); 
+      
+      //Serial.println("/ handler: drop lock"); Serial.flush(); 
       xSemaphoreGiveRecursive(networkMutex); 
-      if (responseString.length() > 0 && responseString.startsWith("{") && responseString.endsWith("}"))
-        server.send(200, "text/json", responseString);
-      else 
-        server.send(500, "text/plain", "Invalid return string.");
+
+      //Serial.println("/ handler: send 200"); Serial.flush(); 
+
+      server.send(200, "text/json", responseString.length() > 0 ? responseString.c_str() : "{ 'status':\"Loading...\" }");
+
+      //Serial.println("/ handler: success sent 200"); Serial.flush(); 
     }
     else 
     {
+      //Serial.println("/ handler: fail send 500"); Serial.flush(); 
+
       server.send(500, "text/plain", "Failed to parse request.");
+
+      //Serial.println("/ handler: fail sent 500"); Serial.flush(); 
     }
+
+    //Serial.println("Leave / handler"); Serial.flush(); 
   });
 
   server.onNotFound(handleNotFound);
   server.begin();
-  Serial.println("HTTP server started");
-  
+  //Serial.println("HTTP server started");
+
   CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_handleClient); 
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, AC_DATA_EXPIRY_TIME_MS/2); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, 5000); 
 }
 
 void aosSetup1()
 {
-  TEMPERATURES.add("HRV Intake Inlet", "hrvIntakeInletTempC", HRV_INTAKE_INLET_TEMP_ADDR); 
-  TEMPERATURES.add("HRV Intake Outlet", "hrvIntakeOutletTempC", HRV_INTAKE_OUTLET_TEMP_ADDR); 
-  TEMPERATURES.add("HRV Exhaust Inlet", "hrvExhaustInletTempC", HRV_EXHAUST_INLET_TEMP_ADDR); 
-  TEMPERATURES.add("HRV Exhaust Outlet", "hrvExhaustOutletTempC", HRV_EXHAUST_OUTLET_TEMP_ADDR); 
-  TEMPERATURES.add("Intake", "intakeTempC", INTAKE_TEMP_ADDR); 
-  TEMPERATURES.add("Living Room Outlet", "lrOutletTempC", LR_OUTLET_TEMP_ADDR); 
-  TEMPERATURES.add("Front Entryway Outlet", "fewOutletTempC", FEW_OUTLET_TEMP_ADDR);
-  TEMPERATURES.discoverSensors();
-
-  BLOWERS.add("HRV Low Exhaust", HRV_LOW_EXHAUST, false);
-  BLOWERS.add("HRV Low Intake", HRV_LOW_INTAKE, false);
-  BLOWERS.add("HRV High Exhaust", HRV_HIGH_EXHAUST, false);
-  BLOWERS.add("HRV High Intake", HRV_HIGH_INTAKE, false);
-  BLOWERS.add("HRV Exhaust Boost", HRV_EXHAUST_BOOST, false);
-  BLOWERS.add("Exhaust Bypass", EXHAUST_BYPASS, false);
-  BLOWERS.add("Entryway Bypass", ENTRYWAY_BYPASS, false);
-  BLOWERS.add("Livingroom Duct Boost", LR_DUCT_BOOST, false);
-  BLOWERS.setAll();
-
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseACData, AC_DATA_EXPIRY_TIME_MS/4);  
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, AC_DATA_EXPIRY_TIME_MS/4);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseACData, 2000);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 2000);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
 
-void populateHttpResponse(JSONVar& document) 
+void populateHttpResponse(JsonDocument& document) 
 {
   document["intakeHumidity"] = ductIntakeHumidity; 
   document["hrvCommand"] = String((char)hrvCommand).c_str();
@@ -308,6 +334,7 @@ void populateHttpResponse(JSONVar& document)
   document["acCommand"] = String((char)acCommand).c_str();
   document["state"] = String((char)state).c_str();
   document["coolingForMs"] = coolingForMs(); 
+  document["acclimateOnForMs"] = acclimateOnForMs(); 
   document["timeMs"] = millis(); 
   if (acData.isSet())
   {
@@ -323,12 +350,50 @@ void populateHttpResponse(JSONVar& document)
 
 void task_parseACData()
 {
+  //Serial.println("                             Enter task_parseACData"); Serial.flush(); 
   acData.parse();
+  //Serial.println("                             Leave task_parseACData"); Serial.flush(); 
 }
 
 void task_pollACData()
 {
+  //Serial.println("Enter task_pollACData"); Serial.flush(); 
   acData.execute(acCommand);
+  //Serial.println("Leave task_pollACData"); Serial.flush(); 
+}
+
+void task_handleClient()
+{
+  //Serial.println("Enter task_handleClient"); Serial.flush(); 
+  server.handleClient(); 
+  //Serial.println("Leave task_handleClient"); Serial.flush(); 
+  delay(10); 
+}
+
+void task_processCommands()
+{
+  //Serial.println("                             Enter task_processCommands");Serial.flush(); 
+  state = computeState(); 
+  //Serial.printf("                             Leave computeState: %c\r\n", state);Serial.flush(); 
+  if (stateIsAcclimateDone())
+  { 
+    state = computeState(); 
+    //Serial.printf("                             Leave computeState: %c\r\n", state);Serial.flush(); 
+  }
+  //Serial.println("                             Enter computeACCommand");Serial.flush(); 
+  computeACCommand(state); 
+  //Serial.println("                             Leave computeACCommand");Serial.flush(); 
+  //Serial.println("                             Enter processCommands");Serial.flush(); 
+  processCommands(state, hrvCommand, lrDuctCommand, fewDuctCommand);
+  //Serial.println("                             Leave processCommands");
+  //Serial.println("                             Leave task_processCommands"); Serial.flush(); 
+}
+
+void task_updateNextBlower()
+{
+  //Serial.println("                             Enter task_updateNextBlower"); Serial.flush(); 
+  BLOWERS.setNext();
+  //Serial.println("                             Leave task_updateNextBlower"); Serial.flush(); 
 }
 
 bool stateIsAcclimate()
@@ -348,7 +413,7 @@ unsigned long acclimateOnForMs()
 
 system_cooling_state_t computeState()
 {
-  Serial.printf("computeState(): enter\r\n"); 
+  //Serial.printf("computeState(): enter\r\n"); 
 
   if (!acData.isSet() || !TEMPERATURES.ready())
   {
@@ -363,9 +428,9 @@ system_cooling_state_t computeState()
   if (!acData.isEvapTempValid() || !acData.isOutletTempValid())
     return state;
 
-  Thermostat lr  = thermostats.get(LIVING_ROOM); 
-  Thermostat mb  = thermostats.get(MASTER_BEDROOM); 
-  Thermostat few = thermostats.get(FRONT_ENTRYWAY); 
+  Thermostat& lr  = thermostats.get(LIVING_ROOM); 
+  Thermostat& mb  = thermostats.get(MASTER_BEDROOM); 
+  Thermostat& few = thermostats.get(FRONT_ENTRYWAY); 
 
   if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent())
   {
@@ -388,14 +453,14 @@ system_cooling_state_t computeState()
     acclimateOnTimeMs = timeMs; 
   }
 
-  Serial.printf("computeState(): proceeding\r\n"); 
+  //Serial.printf("computeState(): proceeding\r\n"); 
 
   double evapTempC = acData.getEvapTempC(); 
   double outletTempC = acData.getOutletTempC(); 
   double ductIntakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR);
   double roomTemperatureC = thermostats.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
 
-  Serial.printf("computeState(): evapTempC=%f outletTempC=%f ductIntakeTempC=%f\r\n", evapTempC, outletTempC, ductIntakeTempC); 
+  //Serial.printf("computeState(): evapTempC=%f outletTempC=%f ductIntakeTempC=%f\r\n", evapTempC, outletTempC, ductIntakeTempC); 
 
   bool needsAcclimation = 
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
@@ -405,10 +470,10 @@ system_cooling_state_t computeState()
   {
     ductIntakeHumidity = calculate_relative_humidity(ductIntakeTempC, evapTempC); 
     outletHumidity = calculate_relative_humidity(outletTempC, evapTempC);
-    Serial.printf("computeState(): ductIntakeHumidity=%f outletHumidity=%f\r\n", ductIntakeHumidity, outletHumidity); 
+    //Serial.printf("computeState(): ductIntakeHumidity=%f outletHumidity=%f\r\n", ductIntakeHumidity, outletHumidity); 
     
     roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
-    Serial.printf("computeState(): roomHumidity=%f roomTemperatureC=%f\r\n", roomHumidity, roomTemperatureC); 
+    //Serial.printf("computeState(): roomHumidity=%f roomTemperatureC=%f\r\n", roomHumidity, roomTemperatureC); 
     
     if (thermostats.coolingCalledFor() && acclimateOnForMs() > ACCLIMATE_TIME_WHEN_COOLING)
     {
@@ -488,31 +553,7 @@ system_cooling_state_t computeState()
   }
 }
 
-void task_handleClient()
-{
-  server.handleClient(); 
-}
 
-void task_processCommands()
-{
-  Serial.println("Enter task_processCommands");
-  state = computeState(); 
-  Serial.printf("Leave computeState: %c\r\n", state);
-  if (stateIsAcclimateDone())
-  { 
-    state = computeState(); 
-    Serial.printf("Leave computeState: %c\r\n", state);
-  }
-  computeACCommand(state); 
-  Serial.println("Leave computeACCommand");
-  processCommands(state, hrvCommand, lrDuctCommand, fewDuctCommand);
-  Serial.println("Leave processCommands");
-}
-
-void task_updateNextBlower()
-{
-  BLOWERS.setNext();
-}
 
 void computeACCommand(system_cooling_state_t state)
 {
