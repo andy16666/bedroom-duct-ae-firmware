@@ -315,7 +315,7 @@ void aosSetup()
   //Serial.println("HTTP server started");
 
   CORE_0_KERNEL->addImmediate(CORE_0_KERNEL, task_handleClient); 
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, 5000); 
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, 15000); 
 }
 
 void aosSetup1()
