@@ -32,6 +32,7 @@
 #include <GPIOOutputs.h>
 #include <Thermostats.h>
 #include <SimplicityAC.h> 
+#include <WebServer.h>
 
 using namespace AOS;
 
@@ -40,8 +41,11 @@ using AOS::Thermostats;
 using AOS::TemperatureSensors;
 using AOS::Ping; 
 
-#define COOLING_TIME_BEFORE_ACCLIMATE 30 * 60 * 1000
+#define COOLING_TIME_BEFORE_ACCLIMATE 60 * 60 * 1000
 #define ACCLIMATE_TIME_WHEN_COOLING    2 * 60 * 1000
+
+#define AC_HOSTNAME "ac1"
+#define HOSTNAME "hrv1"
 
 #define HRV_LOW_EXHAUST  6
 #define HRV_LOW_INTAKE   7
@@ -64,9 +68,8 @@ using AOS::Ping;
 #define FEW_OUTLET_TEMP_ADDR 176
 
 GPIOOutputs BLOWERS("Blowers");
-
-SimplicityAC acData(AC_HOSTNAME); 
-AOS::Thermostats thermostats;
+SimplicityAC AC(AC_HOSTNAME); 
+Thermostats THERMOSTATS;
 
 const char* LIVING_ROOM    = "lr"; 
 const char* MASTER_BEDROOM = "mb"; 
@@ -94,6 +97,7 @@ typedef enum {
 } few_duct_cmd_t;
 
 typedef enum {
+  DST_UNINIT = 'U', 
   DST_IDLE = 'I', 
   DST_COOL_FEW = 'F', 
   DST_COOL_MB_HIGH = 'h', 
@@ -111,23 +115,23 @@ typedef enum {
 static volatile ventilate_cmd_t         hrvCommand          __attribute__((section(".uninitialized_data")));
 static volatile lr_duct_cmd_t           lrDuctCommand       __attribute__((section(".uninitialized_data")));
 static volatile few_duct_cmd_t          fewDuctCommand      __attribute__((section(".uninitialized_data"))); 
-static volatile system_cooling_state_t  state               __attribute__((section(".uninitialized_data"))); 
-static volatile ac_cmd_t                acCommand           __attribute__((section(".uninitialized_data"))); 
 static volatile double                  outletHumidity      __attribute__((section(".uninitialized_data")));
 static volatile double                  ductIntakeHumidity  __attribute__((section(".uninitialized_data")));
 static volatile double                  roomHumidity        __attribute__((section(".uninitialized_data")));
 
-volatile long coolOnTime = millis(); 
-volatile long acclimateOnTimeMs = millis(); 
+volatile system_cooling_state_t  state; 
+volatile ac_cmd_t                acCommand;
+volatile long coolOnTime; 
+volatile long acclimateOnTimeMs; 
 
 unsigned long coolingForMs()
 {
-  return acData.isSet() && acData.isCooling() ? millis() - coolOnTime : 0; 
+  return AC.isSet() && AC.isCooling() ? millis() - coolOnTime : 0; 
 }
 
 const char* generateHostname()
 {
-  return "hrv1"; 
+  return HOSTNAME; 
 }
 
 void aosInitialize()
@@ -135,18 +139,21 @@ void aosInitialize()
   hrvCommand = CMD_VENTILATE_OFF; 
   lrDuctCommand = CMD_LR_DUCT_OFF; 
   fewDuctCommand = CMD_ENTRYWAY_DUCT_OFF; 
-  acCommand = CMD_AC_OFF; 
   outletHumidity = 0; 
   ductIntakeHumidity = 0;
   roomHumidity = 0; 
-  state = DST_IDLE; 
 }
 
 void aosSetup()
 {
-  thermostats.add(LIVING_ROOM);  
-  thermostats.add(MASTER_BEDROOM); 
-  thermostats.add(FRONT_ENTRYWAY); 
+  acCommand = CMD_AC_OFF; 
+  state = DST_UNINIT; 
+  coolOnTime = millis();
+  acclimateOnTimeMs = millis(); 
+
+  THERMOSTATS.add(LIVING_ROOM);  
+  THERMOSTATS.add(MASTER_BEDROOM); 
+  THERMOSTATS.add(FRONT_ENTRYWAY); 
 
   TEMPERATURES.add("HRV Intake Inlet", "hrvIntakeInletTempC", HRV_INTAKE_INLET_TEMP_ADDR); 
   TEMPERATURES.add("HRV Intake Outlet", "hrvIntakeOutletTempC", HRV_INTAKE_OUTLET_TEMP_ADDR); 
@@ -167,12 +174,12 @@ void aosSetup()
   BLOWERS.init(); 
   BLOWERS.setAll();
 
-  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollACData, 15000);   
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollAC, 15000);   
 }
 
 void aosSetup1()
 {
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseACData, 2000);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseAC, 2000);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 2000);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
@@ -231,18 +238,18 @@ bool handleHttpArg(String argName, String arg)
     char* roomName = strtok(buffer, "_");
     char* argumentStr = strtok(NULL, "_");
 
-    if (roomName && argumentStr && thermostats.contains(roomName))
+    if (roomName && argumentStr && THERMOSTATS.contains(roomName))
     {
       DPRINTF("%s: %s %s\r\n", argName.c_str(), roomName, argumentStr); 
 
       if (argName.equals("thset"))
-        thermostats.get(roomName).setSetPointC(atoff(argumentStr)); 
+        THERMOSTATS.get(roomName).setSetPointC(atoff(argumentStr)); 
       
       if (argName.equals("thcur"))
-        thermostats.get(roomName).setCurrentTemperatureC(atoff(argumentStr));
+        THERMOSTATS.get(roomName).setCurrentTemperatureC(atoff(argumentStr));
       
       if (argName.equals("thcmd"))
-        thermostats.get(roomName).setCommand(argumentStr[0] == '1');  
+        THERMOSTATS.get(roomName).setCommand(argumentStr[0] == '1');  
     }
     else 
     {
@@ -264,29 +271,37 @@ void populateHttpResponse(JsonDocument& document)
   document["coolingForMs"] = coolingForMs(); 
   document["acclimateOnForMs"] = acclimateOnForMs(); 
   document["timeMs"] = millis(); 
-  if (acData.isSet())
+  BLOWERS.addTo("blowers", document); 
+  if (AC.isSet())
   {
-    acData.addTo(AC_HOSTNAME, document); 
+    AC.addTo(AC_HOSTNAME, document); 
     document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
     document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
   }
-  if (thermostats.isCurrent())
+  if (THERMOSTATS.isCurrent())
   {
-    thermostats.addTo("thermostats", document); 
+    THERMOSTATS.addTo("thermostats", document); 
   }
 }
 
-void task_parseACData()
+void task_parseAC()
 {
-  DPRINTLN("                             Enter task_parseACData"); 
-  acData.parse();
-  DPRINTLN("                             Leave task_parseACData"); 
+  DPRINTLN("                             Enter task_parseAC"); 
+  AC.parse();
+  DPRINTLN("                             Leave task_parseAC"); 
 }
 
-void task_pollACData()
+void task_pollAC()
 {
-  DPRINTLN("Enter task_pollACData"); 
-  acData.execute(acCommand);
+  DPRINTLN("Enter task_pollAC"); 
+  if (state != DST_UNINIT)
+  {
+    AC.execute(acCommand);
+  }
+  else 
+  {
+    AC.execute(); 
+  }
   delay(10); 
 }
 
@@ -335,22 +350,30 @@ system_cooling_state_t computeState()
 {
   DPRINTF("computeState(): enter\r\n"); 
 
-  if (!acData.isSet() || !TEMPERATURES.ready())
+  if (!AC.isSet() || !TEMPERATURES.ready())
   {
     return state; 
   }
 
-  if (!thermostats.contains(LIVING_ROOM) || !thermostats.contains(MASTER_BEDROOM) || !thermostats.contains(FRONT_ENTRYWAY))
+  if (state == DST_UNINIT)
+  {
+    if (AC.isSet())
+    {
+      acCommand = AC.getCommand(); 
+    }
+  }
+
+  if (!THERMOSTATS.contains(LIVING_ROOM) || !THERMOSTATS.contains(MASTER_BEDROOM) || !THERMOSTATS.contains(FRONT_ENTRYWAY))
   {
     return state; 
   }
 
-  if (!acData.isEvapTempValid() || !acData.isOutletTempValid())
+  if (!AC.isEvapTempValid() || !AC.isOutletTempValid())
     return state;
 
-  Thermostat& lr  = thermostats.get(LIVING_ROOM); 
-  Thermostat& mb  = thermostats.get(MASTER_BEDROOM); 
-  Thermostat& few = thermostats.get(FRONT_ENTRYWAY); 
+  Thermostat& lr  = THERMOSTATS.get(LIVING_ROOM); 
+  Thermostat& mb  = THERMOSTATS.get(MASTER_BEDROOM); 
+  Thermostat& few = THERMOSTATS.get(FRONT_ENTRYWAY); 
 
   if (!lr.isCurrent() || !mb.isCurrent() || !few.isCurrent())
   {
@@ -363,7 +386,7 @@ system_cooling_state_t computeState()
   }
 
   unsigned long timeMs = millis(); 
-  if (!acData.isCooling())
+  if (!AC.isCooling())
   {
     coolOnTime = timeMs; 
   }
@@ -375,14 +398,15 @@ system_cooling_state_t computeState()
 
   DPRINTF("computeState(): proceeding\r\n"); 
 
-  double evapTempC = acData.getEvapTempC(); 
-  double outletTempC = acData.getOutletTempC(); 
+  double evapTempC = AC.getEvapTempC(); 
+  double outletTempC = AC.getOutletTempC(); 
   double ductIntakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR);
-  double roomTemperatureC = thermostats.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
+  double roomTemperatureC = THERMOSTATS.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
 
   DPRINTF("computeState(): evapTempC=%f outletTempC=%f ductIntakeTempC=%f\r\n", evapTempC, outletTempC, ductIntakeTempC); 
 
   bool needsAcclimation = 
+
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
     || (coolingForMs() > COOLING_TIME_BEFORE_ACCLIMATE) || (state == DST_IDLE && outletTempC < 15); 
 
@@ -395,7 +419,7 @@ system_cooling_state_t computeState()
     roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
     DPRINTF("computeState(): roomHumidity=%f roomTemperatureC=%f\r\n", roomHumidity, roomTemperatureC); 
     
-    if (thermostats.coolingCalledFor() && acclimateOnForMs() > ACCLIMATE_TIME_WHEN_COOLING)
+    if (THERMOSTATS.coolingCalledFor() && acclimateOnForMs() > ACCLIMATE_TIME_WHEN_COOLING)
     {
       return DST_ACCLIMATE_DONE; 
     }
@@ -413,7 +437,7 @@ system_cooling_state_t computeState()
   }
   else if (needsAcclimation)
   {
-    if (thermostats.coolingCalledFor() && thermostats.getMaxCoolingMagnitude() > 2.0)
+    if (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() > 2.0)
     {
       return DST_ACCLIMATE_HIGH;
     }
@@ -473,10 +497,13 @@ system_cooling_state_t computeState()
   }
 }
 
-
-
 void computeACCommand(system_cooling_state_t state)
 {
+  if (state == DST_UNINIT)
+  {
+    return;
+  }
+
   switch (state) 
   {
     case DST_IDLE:           
@@ -498,6 +525,11 @@ void computeACCommand(system_cooling_state_t state)
 
 void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
 {
+  if (state == DST_UNINIT)
+  {
+    return;
+  }
+
   switch (state) 
   {
     case DST_COOL_FEW:        break; 
