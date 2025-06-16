@@ -2,359 +2,435 @@
 <html lang="en">
 
 <head>
-	<meta charset="UTF-8">
-	<meta http-equiv="X-UA-Compatible" content="IE=edge">
-	<meta name="viewport" content="width=device-width, 
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, 
                            initial-scale=1.0">
-	<title></title>
-	<style>
-		h1,
-		h3 {
-			text-align: center;
-			color: green;
-		}
+  <title></title>
+  <style>
+    h1,
+    h3 {
+      text-align: center;
+      color: green;
+    }
 
-		button {
-			margin-left: 36.5rem;
-		}
+    button {
+      margin-left: 36.5rem;
+    }
 
-		#controls {
-			text-align: left;
-			font-family: Arial, Helvetica, sans-serif;
-		}
+    #controls {
+      text-align: left;
+      font-family: Arial, Helvetica, sans-serif;
+    }
 
-		#values {
-			text-align: left;
-			font-family: Arial, Helvetica, sans-serif;
-		}
+    #values {
+      text-align: left;
+      font-family: Arial, Helvetica, sans-serif;
+    }
 
-		#source {
-			text-align: left;
-			font-family: Arial, Helvetica, sans-serif;
+    #source {
+      text-align: left;
+      font-family: Arial, Helvetica, sans-serif;
+    }
 
-		}
+    div.section {
+      padding-left: 5px;
+      border-left: 1px solid #dddddd; 
+    }
 
-		div.h1 {
-			display: inline-grid;
-			background-color: #fefefe;
-			width:100%;
-			border-top: 1px solid #dddddd; 
-			border-bottom: 1px solid #eeeeee; 
-			font-weight: bold;
-		}
+    div.h1 {
+      display: inline-grid;
+      background-color: #fefefe;
+      width:100%;
+      border-top: 1px solid #dddddd; 
+      border-bottom: 1px solid #eeeeee; 
+      font-weight: bold;
+    }
 
-		span.fieldName {
-			padding-left: 10px; 
-			display: inline-grid;
-			background-color: #efefef;
-			width: 300px;
-		}
-
-		span.fieldValue {
-			padding-left: 10px; 
-			display: inline-grid;
-			width: 300px;
-		}
-		span.graphBar {
-			width: 40px; 
-			height: 100px; 
-			display: inline-block;
-			vertical-align: bottom;
-			background-color: #0000ff;
-		}
-	</style>
-
-	<script>
-
-		let history = {}; 
-		let trackHistoryFor = ["intakeTempC", "lrOutletTempC"];
-
-		function loadHrv1(params = "") {
-			// Request
-			var request = new XMLHttpRequest();
-			request.open("GET", "http://hrv1.local/" + params);
-			request.send();
-
-			if (params != "")
-				return;
-
-			// Response
-			request.onreadystatechange = function () {
-				console.log(this.status);
-				if (this.readyState == 4 && this.status == 200) {
-					console.log(this.responseText);
-					let parsedJson = JSON.parse(this.responseText);
-					document.getElementById("source")
-						.innerHTML = JSON.stringify(parsedJson, null, 4);
-
-					//document.getElementById("values").append(createTextRow(
-
-					for (let key of trackHistoryFor)
-					{
-						if (!history[key])
-						{
-							history[key] = []; 
-						}
-
-						history[key].push(parsedJson[key]); 
-					}
-
-					var controlDefinitions = {
-						"Uptime": { "format": "{uptime.powered}" },
-						"Average Ping": { "format": "{ping.average}ms" }, 
-						"CPU Temperature" : { "format": "{cpuTempC}°C" }, 
-						"Free Heap": { "format": "{freeHeapB}B" }, 
-						"System State": { 
-							"jsonName": "state",
-							"options": {
-								"I": "Idle", 
-								"a": "Acclimate",
-								"H": "Global High",
-								"M": "Global Medium",
-								"L": "Global Low",
-								"h": "High",
-								"m": "Medium",
-								"l": "Low"
-							}
-						},
-						"Living Room": {},
-						"LR Thermostat": { "format": "{thermostats.lr.currentTempC}°C (Set: {thermostats.lr.setPointC}°C, On: {thermostats.lr.command})" },
-						"Living Room Duct Manual Override": {
-							"urlParam": "lr",
-							"jsonName": "lrDuctCommand",
-							"options": {
-								"O": "Off",
-								"L": "Low",
-								"M": "Medium",
-								"H": "High"
-							}
-						},
-						"LR Outlet Temp": { "format": "{lrOutletTempC}°C" },
-						"Master Bedroom": {},
-						"MB Thermostat": { "format": "{thermostats.mb.currentTempC}°C (Set: {thermostats.mb.setPointC}°C, On: {thermostats.mb.command})" },
-						"HRV": {
-							"urlParam": "hrv",
-							"jsonName": "hrvCommand",
-							"options": {
-								"O": "Off",
-								"L": "Low",
-								"M": "Medium",
-								"H": "High"
-							}
-						},
-						" - Intake: " : { "format" : "{hrvIntakeInletTempC}°C => {hrvIntakeOutletTempC}°C" },
-						" - Exhaust: " : { "format" : "{hrvExhaustInletTempC}°C => {hrvExhaustOutletTempC}°C" },
-						"Front Entryway/Laundryroom": {},
-						"FEW Thermostat": { "format": "{thermostats.few.currentTempC}°C (Set: {thermostats.few.setPointC}°C, On: {thermostats.few.command})" }, 
-						"FEW Duct Manual Override": {
-							"urlParam": "ew",
-							"jsonName": "fewDuctCommand",
-							"options": {
-								"O": "Off",
-								"H": "High"
-							}
-						},
-						"FEW Duct Temp": { "format": "{fewOutletTempC}°C" },
-						"A/C": {}, 
-						"Outgoing A/C Command": {
-							"jsonName": "acCommand",
-							"options": {
-								"-": "Staged Off",
-								"L": "Low",
-								"M": "Medium",
-								"C": "High",
-								"l": "Low",
-								"m": "Medium",
-								"F": "High",
-								"K": "Kill"
-							}
-						},
-						"A/C Evap": { "format": "{ac1.evapTempC}°C" },
-						"A/C Outlet": { "format": "{ac1.outletTempC}°C ({ac1.outletHumidity}% humidity)" },
-						"Duct Intake": { "format": "{intakeTempC}°C ({intakeHumidity}% humidity)" }
-					};
-				
-					drawControls(parsedJson, controlDefinitions);
-				}
-			};
-		};
-
-		function drawControls(parsedJson, controlDefinitions) {
-			document.getElementById("controls").innerHTML = '';
-			Object.entries(controlDefinitions).map(([key, controlDefinition]) => {
-				if (controlDefinition['options'])
-					document.getElementById("controls").appendChild(drawControl(parsedJson, key, controlDefinition));
-				else if (controlDefinition['format']) {
-					formattedText = controlDefinition['format'];
-					formattedText = formattedText.replace(/\{([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
-						return parsedJson[p1] + "";
-					});
-					formattedText = formattedText.replace(/\{([^.\}]+).([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
-						return parsedJson[p1][p2] + "";
-					});
-					formattedText = formattedText.replace(/\{([^.\}]+).([^.\}]+).([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
-						return parsedJson[p1][p2][p3] + "";
-					});
-					document.getElementById("controls").appendChild(createTextRow(key, formattedText));
-				}
-				else if (controlDefinition['jsonName'])
-				{
-					document.getElementById("controls").appendChild(createTextRow(key, parsedJson[controlDefinition['jsonName']]));
-				}
-				else 
-				{
-					document.getElementById("controls").appendChild(createHeadingRow(key));
-				}
-			});
-
-			Object.entries(history).map(([key, data]) => {
-				document.getElementById('controls').appendChild(createGraphRow(key, data)); 
-			}); 
-		}
-
-		function drawControl(parsedJson, controlName, controlDefinition) {
-			let selectedKey = parsedJson[controlDefinition['jsonName']];
-
-			if (!controlDefinition['options'][parsedJson[controlDefinition['jsonName']]])
-			{
-				controlDefinition['options'][parsedJson[controlDefinition['jsonName']]] = parsedJson[controlDefinition['jsonName']]; 
-			}
-
-			let selector = document.createElement('select');
-
-			//selector.setAttribute('disabled', 'disabled'); 
-			Object.entries(controlDefinition['options']).map(([key, value]) => {
-				const option = document.createElement('option');
-				option.value = key;
-				option.text = value;
-				option.disabled = !controlDefinition['urlParam'];
-				//if (controlDefinition['urlParam'])
-				//	selector.removeAttribute('disabled'); 
-				selector.appendChild(option);
-				if (key == selectedKey) selector.selectedOptions.item(option);
-			});
-
-			if (controlDefinition['urlParam']) {
-				selector.onchange = function () {
-					loadHrv1("?" + controlDefinition['urlParam'] + "=" + selector.childNodes[selector.selectedIndex].value);
-				};
-			}
-
-			selector.value = selectedKey;
-			return createFieldRow(controlName, selector);
-		}
-
-		function createFieldRow(name, valueElement) {
-			let nameSpan = document.createElement('span');
-			nameSpan.className = 'fieldName'
-			nameSpan.innerHTML = name;
-
-			let controlSpan = document.createElement('span');
-			controlSpan.className = 'fieldValue'
-			controlSpan.appendChild(valueElement);
-
-			let container = document.createElement('div');
-			container.className = 'field'
-			container.appendChild(nameSpan);
-			container.appendChild(controlSpan);
-			return container;
-		}
-
-		function createTextRow(name, valueText) {
-			let nameSpan = document.createElement('span');
-			nameSpan.className = 'fieldName'
-			nameSpan.innerHTML = name;
-
-			let controlSpan = document.createElement('span');
-			controlSpan.className = 'fieldValue'
-			controlSpan.innerHTML = valueText;
-
-			let container = document.createElement('div');
-			container.className = 'field'
-			container.appendChild(nameSpan);
-			container.appendChild(controlSpan);
-			return container;
-		}
-
-		function createHeadingRow(name) {
-			
-
-			let container = document.createElement('div');
-			container.className = 'h1';
-			container.innerHTML = name; 
-			return container;
-		}
-
-		function createGraphRow(key, data) {
-			let size = data.length; 
-			let min = Math.min(...data); 
-			let max = Math.max(...data); 
-			let heightMax = 100; 
+    div.h2 {
+      display: inline-grid;
+      background-color: #fefefe;
+      width:100%;
+      padding-left: 5px;
+      border-top: 1px solid #dddddd; 
+      border-bottom: 1px solid #eeeeee; 
+      font-weight: bold;
+    }
 
 
-			let nameSpan = document.createElement('span');
-			nameSpan.className = 'fieldName'
-			nameSpan.style.paddingTop = heightMax + 'px'; 
-			nameSpan.innerHTML = key;
+    span.fieldName {
+      padding-left: 10px; 
+      display: inline-grid;
+      background-color: #efefef;
+      width: 300px;
+    }
 
-			let minSpan = document.createElement('span');
-			minSpan.style.position = 'absolute'
-			minSpan.style.left = '270px';  
-			minSpan.style.bottom = '0';  
-			minSpan.style.color = '#444444'; 
-			minSpan.innerHTML = min; 
+    span.fieldValue {
+      padding-left: 10px; 
+      display: inline-grid;
+      width: 800px;
+    }
+    span.graphBar {
+      width: 40px; 
+      height: 100px; 
+      display: inline-block;
+      vertical-align: bottom;
+      background-color: #0000ff;
+    }
+  </style>
+
+  <script>
+
+    let history = {}; 
+    let trackHistoryFor = ["intakeTempC", "lrOutletTempC"];
+
+    function loadHrv1(params = "") {
+      // Request
+      var request = new XMLHttpRequest();
+      request.open("GET", "http://hrv1.local/" + params);
+      request.send();
+
+      if (params != "")
+        return;
+
+      // Response
+      request.onreadystatechange = function () 
+      {
+        console.log(this.status);
+        if (this.readyState == 4 && this.status == 200) 
+        {
+          console.log(this.responseText);
+          let parsedJson = JSON.parse(this.responseText);
+          document.getElementById("source")
+            .innerHTML = JSON.stringify(parsedJson, null, 4);
+
+          for (let key of trackHistoryFor)
+          {
+            if (!history[key])
+            {
+              history[key] = []; 
+            }
+
+            history[key].push(parsedJson[key]); 
+          }
+
+          var controlDefinitions = {
+            "Uptime": { "format": "{uptime.powered}" },
+            "Average Ping": { "format": "{ping.average}ms (min: {ping.min}ms, max: {ping.max}ms)" }, 
+            "CPU Temperature" : { "format": "{cpuTempC}°C" }, 
+            "Free Heap": { "format": "{freeHeapB}B" }, 
+            "System State": {
+              "jsonName": "state",
+              "options": {
+                "U": "Uninitialized", 
+                "I": "Idle", 
+                "F": "Cool Front Entryway",
+                "h": "High",
+                "m": "Medium",
+                "l": "Low",
+                "H": "Global High",
+                "M": "Global Medium",
+                "L": "Global Low",
+                "c": "Acclimate High",
+                "b": "Acclimate Med",
+                "a": "Acclimate Low",
+                "d": "Acclimate Done"
+              }
+            },
+            "Living Room": { "type": "h1",
+              "Thermostat": { "format": "{thermostats.lr.currentTempC}°C (Set: {thermostats.lr.setPointC}°C, On: {thermostats.lr.command})" },
+              "Duct Manual Override": {
+                "urlParam": "lr",
+                "jsonName": "lrDuctCommand",
+                "options": {
+                  "O": "Off",
+                  "L": "Low",
+                  "M": "Medium",
+                  "H": "High"
+                }
+              },
+              "Outlet Temp": { "format": 
+                    `${parsedJson["blowers"]['Exhaust Bypass']?'>':'='}` +
+                    `${parsedJson["blowers"]['Livingroom Duct Boost']?'>':'='}` + " " +
+                    "{lrOutletTempC}°C" }
+            },
+            "Master Bedroom": { "type":"h1",
+              "MB Thermostat": { "format": "{thermostats.mb.currentTempC}°C (Set: {thermostats.mb.setPointC}°C, On: {thermostats.mb.command})" },
+              "Humidity": { "format":"{ac1.roomHumidity}% humidity"}, 
+              "HRV": {"type":"h2",
+                "Mode": {
+                  "urlParam": "hrv",
+                  "jsonName": "hrvCommand",
+                  "options": {
+                    "O": "Off",
+                    "L": "Low",
+                    "M": "Medium",
+                    "H": "High"
+                  }
+                },
+                "Intake: " : { "format" : 
+                    "{hrvIntakeOutletTempC}°C" +
+                    " " +
+                    `${parsedJson["blowers"]['HRV Low Intake']?'<':'='}` + 
+                    `${parsedJson["blowers"]['HRV High Intake']?'<':'='}` + 
+                    " " + 
+                    "{hrvIntakeInletTempC}°C"
+                },
+                "Exhaust: " : { "format" :
+                    `${parsedJson["blowers"]['HRV Exhaust Boost']?'>':'='}` + " " +
+                    "{hrvExhaustInletTempC}°C " + 
+                    `${parsedJson["blowers"]['HRV Low Exhaust']?'>':'='}` + 
+                    `${parsedJson["blowers"]['HRV High Exhaust']?'>':'='}` + 
+                    " {hrvExhaustOutletTempC}°C" }
+              }
+            },
+            "Front Entryway/Laundryroom": { "type":"h1",
+              "Thermostat": { "format": "{thermostats.few.currentTempC}°C (Set: {thermostats.few.setPointC}°C, On: {thermostats.few.command})" }, 
+              "Duct Manual Override": {
+                "urlParam": "ew",
+                "jsonName": "fewDuctCommand",
+                "options": {
+                  "O": "Off",
+                  "H": "High"
+                }
+              },
+              "Duct Temp": { "format": 
+                    `${parsedJson["blowers"]['Entryway Bypass']?'>':'='}` + " " +
+                    "{fewOutletTempC}°C" }
+            },
+            "A/C": { "type":"h1",
+              "Outgoing A/C Command": {
+                "jsonName": "acCommand",
+                "options": {
+                  "-": "Staged Off",
+                  "L": "Low",
+                  "M": "Medium",
+                  "C": "High",
+                  "l": "Fan Low",
+                  "m": "Fan Medium",
+                  "F": "Fan High",
+                  "K": "Kill"
+                }
+              },
+              "Evaporator": { "format": "{ac1.evapTempC}°C" },
+              "Outlet": { "format": "{ac1.outletTempC}°C ({ac1.outletHumidity}% humidity)" },
+              "Duct Intake": { "format": "{intakeTempC}°C ({intakeHumidity}% humidity)" }
+            }
+          };
+        
+          document.getElementById("controls").innerHTML = '';
+          document.getElementById("controls").appendChild(drawControls(parsedJson, controlDefinitions));
+          Object.entries(history).map(([key, data]) => {
+            document.getElementById('controls').appendChild(createGraphRow(key, data)); 
+          }); 
+        }
+      };
+    };
+
+    function drawControls(parsedJson, controlDefinitions) 
+    {
+      let container = document.createElement('div');
+      container.className = 'section'; 
+      Object.entries(controlDefinitions).map(([key, controlDefinition]) => {
+        if (key == 'type')
+        {
+          
+        }
+        else if (controlDefinition['type'] && controlDefinition['type'] == "h1")
+        {
+          container.appendChild(createH1Row(key));
+          container.appendChild(drawControls(parsedJson, controlDefinition));
+        }
+        else if (controlDefinition['type'] && controlDefinition['type'] == "h2")
+        {
+          container.appendChild(createH2Row(key));
+          container.appendChild(drawControls(parsedJson, controlDefinition));
+        }
+        else if (controlDefinition['options'])
+        {
+          container.appendChild(drawControl(parsedJson, key, controlDefinition));
+        }
+        else if (controlDefinition['format']) 
+        {
+          formattedText = controlDefinition['format'];
+          formattedText = formattedText.replace(/\{([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
+            return parsedJson[p1] + "";
+          });
+          formattedText = formattedText.replace(/\{([^.\}]+).([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
+            return parsedJson[p1][p2] + "";
+          });
+          formattedText = formattedText.replace(/\{([^.\}]+).([^.\}]+).([^.\}]+)\}/g, function (match, p1, p2, p3, offset, string) {
+            return parsedJson[p1][p2][p3] + "";
+          });
+          container.appendChild(createTextRow(key, formattedText));
+        }
+        else if (controlDefinition['jsonName'])
+        {
+          container.appendChild(createTextRow(key, parsedJson[controlDefinition['jsonName']]));
+        }
+        else 
+        {
+          container.appendChild(createHeadingRow(key));
+        }
+      });
+
+      return container; 
+    }
+
+    function drawControl(parsedJson, controlName, controlDefinition) 
+    {
+      let selectedKey = parsedJson[controlDefinition['jsonName']];
+
+      if (!controlDefinition['options'][parsedJson[controlDefinition['jsonName']]])
+      {
+        controlDefinition['options'][parsedJson[controlDefinition['jsonName']]] = parsedJson[controlDefinition['jsonName']]; 
+      }
+
+      let selector = document.createElement('select');
+
+      //selector.setAttribute('disabled', 'disabled'); 
+      Object.entries(controlDefinition['options']).map(([key, value]) => {
+        const option = document.createElement('option');
+        option.value = key;
+        option.text = value;
+        option.disabled = !controlDefinition['urlParam'];
+        //if (controlDefinition['urlParam'])
+        //	selector.removeAttribute('disabled'); 
+        selector.appendChild(option);
+        if (key == selectedKey) selector.selectedOptions.item(option);
+      });
+
+      if (controlDefinition['urlParam']) {
+        selector.onchange = function () {
+          loadHrv1("?" + controlDefinition['urlParam'] + "=" + selector.childNodes[selector.selectedIndex].value);
+        };
+      }
+
+      selector.value = selectedKey;
+      return createFieldRow(controlName, selector);
+    }
+
+    function createFieldRow(name, valueElement) 
+    {
+      let nameSpan = document.createElement('span');
+      nameSpan.className = 'fieldName'
+      nameSpan.innerHTML = name;
+
+      let controlSpan = document.createElement('span');
+      controlSpan.className = 'fieldValue'
+      controlSpan.appendChild(valueElement);
+
+      let container = document.createElement('div');
+      container.className = 'field'
+      container.appendChild(nameSpan);
+      container.appendChild(controlSpan);
+      return container;
+    }
+
+    function createTextRow(name, valueText) 
+    {
+      let nameSpan = document.createElement('span');
+      nameSpan.className = 'fieldName'
+      nameSpan.innerHTML = name;
+
+      let controlSpan = document.createElement('span');
+      controlSpan.className = 'fieldValue'
+      controlSpan.innerHTML = valueText;
+
+      let container = document.createElement('div');
+      container.className = 'field'
+      container.appendChild(nameSpan);
+      container.appendChild(controlSpan);
+      return container;
+    }
+
+    function createH1Row(name) 
+    {
+      let container = document.createElement('div');
+      container.className = 'h1';
+      container.innerHTML = name; 
+      return container;
+    }
+
+    function createH2Row(name) 
+    {
+      let container = document.createElement('div');
+      container.className = 'h2';
+      container.innerHTML = name; 
+      return container;
+    }
+
+    function createGraphRow(key, data) 
+    {
+      let size = data.length; 
+      let min = Math.min(...data); 
+      let max = Math.max(...data); 
+      let heightMax = 100; 
 
 
-			let maxSpan = document.createElement('span');
-			maxSpan.style.position = 'absolute'
-			maxSpan.style.left = '270px';  
-			maxSpan.style.bottom = heightMax + 'px';  
-			maxSpan.style.color = '#444444'; 
-			maxSpan.innerHTML = max; 
+      let nameSpan = document.createElement('span');
+      nameSpan.className = 'fieldName'
+      nameSpan.style.paddingTop = heightMax + 'px'; 
+      nameSpan.innerHTML = key;
 
-			
+      let minSpan = document.createElement('span');
+      minSpan.style.position = 'absolute'
+      minSpan.style.left = '270px';  
+      minSpan.style.bottom = '0';  
+      minSpan.style.color = '#444444'; 
+      minSpan.innerHTML = min; 
 
-			let container = document.createElement('div');
-			container.style.display = 'block'; 
-			container.style.position = 'relative'
-			container.style.height = (heightMax + 20) + 'px'; 
-			container.style.whiteSpace = 'nowrap'; 
-			container.style.verticalAlign = 'bottom'; 
-			container.appendChild(nameSpan); 
-			container.appendChild(maxSpan); 
-			container.appendChild(minSpan); 
 
-			for (let value of data)
-			{
-				let proportion = (value - min) / (max - min); 
+      let maxSpan = document.createElement('span');
+      maxSpan.style.position = 'absolute'
+      maxSpan.style.left = '270px';  
+      maxSpan.style.bottom = heightMax + 'px';  
+      maxSpan.style.color = '#444444'; 
+      maxSpan.innerHTML = max; 
 
-				let bar = document.createElement('span');
-				bar.style.display = 'inline-block'; 
-				bar.style.backgroundColor = '#0000ff'; 
-				bar.style.color = '#0000ff'; 
-				bar.style.width = (size < 10 ? 100 : 1000 / size) + 'px'; 
-				bar.style.paddingTop = (proportion * heightMax) + 'px'; 
-				bar.innerHTML = '.';
-				container.appendChild(bar); 
-			}
+      
 
-			return container;
-		}
+      let container = document.createElement('div');
+      container.style.display = 'block'; 
+      container.style.position = 'relative'
+      container.style.height = (heightMax + 20) + 'px'; 
+      container.style.whiteSpace = 'nowrap'; 
+      container.style.verticalAlign = 'bottom'; 
+      container.appendChild(nameSpan); 
+      container.appendChild(maxSpan); 
+      container.appendChild(minSpan); 
 
-		window.onload = function () {
-			loadHrv1();
-			setInterval(loadHrv1, 10000)
-		};
-	</script>
+      for (let value of data)
+      {
+        let proportion = (value - min) / (max - min); 
+
+        let bar = document.createElement('span');
+        bar.style.display = 'inline-block'; 
+        bar.style.backgroundColor = '#0000ff'; 
+        bar.style.color = '#0000ff'; 
+        bar.style.width = (size < 10 ? 100 : 1000 / size) + 'px'; 
+        bar.style.paddingTop = (proportion * heightMax) + 'px'; 
+        bar.innerHTML = '.';
+        container.appendChild(bar); 
+      }
+
+      return container;
+    }
+
+    window.onload = function () {
+      loadHrv1();
+      setInterval(loadHrv1, 10000)
+    };
+  </script>
 </head>
 
 <body>
-	<div id="controls">
-		Loading...
-	</div>
-	<pre id="source">
+  <div id="controls">
+    Loading...
+  </div>
+  <pre id="source">
 
-	</pre>
+  </pre>
 </body>
 
 </html>

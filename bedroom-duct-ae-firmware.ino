@@ -100,12 +100,14 @@ typedef enum {
   DST_UNINIT = 'U', 
   DST_IDLE = 'I', 
   DST_COOL_FEW = 'F', 
+  DST_HEAT_FEW = 'U',
   DST_COOL_MB_HIGH = 'h', 
   DST_COOL_MB_MED  = 'm', 
   DST_COOL_MB_LOW  = 'l', 
   DST_COOL_MB_LR_HIGH = 'H', 
   DST_COOL_MB_LR_MED  = 'M', 
   DST_COOL_MB_LR_LOW  = 'L',
+  DST_HEAT_LR = 'T', 
   DST_ACCLIMATE_HIGH = 'c',
   DST_ACCLIMATE_MED  = 'b',
   DST_ACCLIMATE_LOW  = 'a',
@@ -179,8 +181,8 @@ void aosSetup()
 
 void aosSetup1()
 {
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_parseAC, 2000);  
-  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 2000);  
+  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_parseAC);  
+  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_processCommands);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
 
@@ -456,7 +458,7 @@ system_cooling_state_t computeState()
     {
       return DST_COOL_MB_HIGH; 
     }
-    else if (mb.getMagnitude() >= 0.25)
+    else if (mb.getMagnitude() >= 0.5)
     {
       return DST_COOL_MB_MED; 
     }
@@ -473,11 +475,11 @@ system_cooling_state_t computeState()
     }
     else 
     {
-      if (lr.getMagnitude() >= 0.5)
+      if (lr.getMagnitude() >= 1.0)
       {
         return DST_COOL_MB_LR_HIGH; 
       }
-      else if (lr.getMagnitude() >= 0.25)
+      else if (lr.getMagnitude() >= 0.5)
       {
         return DST_COOL_MB_LR_MED; 
       }
@@ -490,6 +492,16 @@ system_cooling_state_t computeState()
   else if (few.coolingCalledFor())
   {
     return DST_COOL_FEW; 
+  }
+  else if (few.heatCalledFor() && TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > few.getCurrentTemperatureC())
+  {
+    return DST_HEAT_FEW; 
+  }
+  else if (lr.heatCalledFor()
+      && (TEMPERATURES.getTempC(LR_OUTLET_TEMP_ADDR) > lr.getCurrentTemperatureC() || TEMPERATURES.getTempC(INTAKE_TEMP_ADDR) > lr.getCurrentTemperatureC())
+  )
+  {
+    return DST_HEAT_LR; 
   }
   else 
   {
@@ -532,27 +544,19 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
 
   switch (state) 
   {
-    case DST_COOL_FEW:        break; 
-    case DST_COOL_MB_HIGH:    hrvCommand = CMD_VENTILATE_MED; break; 
-    case DST_COOL_MB_MED:     hrvCommand = CMD_VENTILATE_MED;  break; 
-    case DST_COOL_MB_LOW:     break; 
+    case DST_COOL_MB_HIGH:    hrvCommand = CMD_VENTILATE_OFF; break; 
     case DST_COOL_MB_LR_HIGH: hrvCommand = CMD_VENTILATE_OFF; break; 
     case DST_COOL_MB_LR_MED:  hrvCommand = CMD_VENTILATE_OFF; break; 
     case DST_COOL_MB_LR_LOW:  hrvCommand = CMD_VENTILATE_OFF; break; 
     case DST_ACCLIMATE_HIGH:  hrvCommand = CMD_VENTILATE_OFF; break;     
-    case DST_ACCLIMATE_MED:   break;     
-    case DST_ACCLIMATE_LOW:   break;   
   }
 
   switch (state) 
   {
-    case DST_COOL_FEW:        break; 
-    case DST_COOL_MB_HIGH:    break; 
-    case DST_COOL_MB_MED:     break; 
-    case DST_COOL_MB_LOW:     break; 
     case DST_COOL_MB_LR_HIGH: lrDuctCommand = CMD_LR_DUCT_HIGH;  break; 
     case DST_COOL_MB_LR_MED:  lrDuctCommand = CMD_LR_DUCT_HIGH;  break; 
     case DST_COOL_MB_LR_LOW:  lrDuctCommand = CMD_LR_DUCT_MED;   break; 
+    case DST_HEAT_LR:         lrDuctCommand = CMD_LR_DUCT_LOW;   break; 
     case DST_ACCLIMATE_HIGH:  lrDuctCommand = CMD_LR_DUCT_MED;   break;     
     case DST_ACCLIMATE_MED:   lrDuctCommand = CMD_LR_DUCT_MED;   break;     
     case DST_ACCLIMATE_LOW:   lrDuctCommand = CMD_LR_DUCT_LOW;   break;   
@@ -560,16 +564,9 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
 
   switch (state) 
   {
+    case DST_HEAT_FEW:        fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break; 
     case DST_COOL_FEW:        fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break; 
-    case DST_COOL_MB_HIGH:    break; 
-    case DST_COOL_MB_MED:     break; 
-    case DST_COOL_MB_LOW:     break; 
-    case DST_COOL_MB_LR_HIGH: fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break; 
-    case DST_COOL_MB_LR_MED:  break; 
-    case DST_COOL_MB_LR_LOW:  break; 
-    case DST_ACCLIMATE_HIGH:  fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break;     
-    case DST_ACCLIMATE_MED:   break;     
-    case DST_ACCLIMATE_LOW:   break;   
+    case DST_ACCLIMATE_HIGH:  fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break;       
   }
 
   BLOWERS.setCommand(

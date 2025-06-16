@@ -1,2 +1,3 @@
 config.h
 .theia/launch.json
+.DS_Store
