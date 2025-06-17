@@ -190,6 +190,8 @@ void aosSetup()
   BLOWERS.init(); 
   BLOWERS.setAll();
 
+  setupFrontEnd("/hrv.html"); 
+
   CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollAC, 15000);   
 }
 
