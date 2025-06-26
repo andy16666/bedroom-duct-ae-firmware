@@ -124,6 +124,7 @@
               "options": {
                 "U": "Uninitialized", 
                 "I": "Idle", 
+                "i": "Cooling Done",
                 "F": "Cool Front Entryway",
                 "h": "High",
                 "m": "Medium",
@@ -131,6 +132,8 @@
                 "H": "Global High",
                 "M": "Global Medium",
                 "L": "Global Low",
+                "P": "MB to LR Push",
+                "A": "Cool Living Room and Front Entryway",
                 "c": "Acclimate High",
                 "b": "Acclimate Med",
                 "a": "Acclimate Low",
@@ -138,7 +141,7 @@
               }
             },
             "Living Room": { "type": "h1",
-              "Thermostat": { "format": "{thermostats.lr.currentTempC}°C (Set: {thermostats.lr.setPointC}°C, On: {thermostats.lr.command})" },
+              "Thermostat": { "format": "{thermostats.lr.currentTempC}°C (Set: {thermostats.lr.setPointC}°C, On: {thermostats.lr.command}, Heat: {thermostats.lr.heatOn})" },
               "Duct Manual Override": {
                 "urlParam": "lr",
                 "jsonName": "lrDuctCommand",
@@ -155,7 +158,7 @@
                     "{lrOutletTempC}°C" }
             },
             "Master Bedroom": { "type":"h1",
-              "MB Thermostat": { "format": "{thermostats.mb.currentTempC}°C (Set: {thermostats.mb.setPointC}°C, On: {thermostats.mb.command})" },
+              "MB Thermostat": { "format": "{thermostats.mb.currentTempC}°C (Set: {thermostats.mb.setPointC}°C, On: {thermostats.mb.command}, Heat: {thermostats.mb.heatOn})" },
               "Humidity": { "format":"{ac1.roomHumidity}% humidity"}, 
               "HRV": {"type":"h2",
                 "Mode": {
