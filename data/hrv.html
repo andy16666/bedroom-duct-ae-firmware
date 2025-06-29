@@ -14,28 +14,36 @@
       color: green;
     }
 
-    button {
-      margin-left: 36.5rem;
+    body {
+      padding: 0; 
+      margin: 0; 
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
 
     #controls {
       text-align: left;
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: Arial, Helvetica, sans-serif; 
+      font-size: 12px; 
     }
 
     #values {
       text-align: left;
       font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
 
     #source {
       text-align: left;
       font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
 
     div.section {
       padding-left: 5px;
       border-left: 1px solid #dddddd; 
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
 
     div.h1 {
@@ -45,6 +53,8 @@
       border-top: 1px solid #dddddd; 
       border-bottom: 1px solid #eeeeee; 
       font-weight: bold;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 16px; 
     }
 
     div.h2 {
@@ -55,21 +65,27 @@
       border-top: 1px solid #dddddd; 
       border-bottom: 1px solid #eeeeee; 
       font-weight: bold;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px; 
     }
-
 
     span.fieldName {
       padding-left: 10px; 
       display: inline-grid;
       background-color: #efefef;
       width: 300px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
 
     span.fieldValue {
       padding-left: 10px; 
       display: inline-grid;
       width: 800px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px; 
     }
+
     span.graphBar {
       width: 40px; 
       height: 100px; 
@@ -126,6 +142,7 @@
                 "I": "Idle", 
                 "i": "Cooling Done",
                 "F": "Cool Front Entryway",
+                "u": "Heat Front Entryway",
                 "h": "High",
                 "m": "Medium",
                 "l": "Low",
@@ -187,7 +204,7 @@
                     " {hrvExhaustOutletTempC}°C" }
               }
             },
-            "Front Entryway/Laundryroom": { "type":"h1",
+            "Front Entryway/Laundry Room": { "type":"h1",
               "Thermostat": { "format": "{thermostats.few.currentTempC}°C (Set: {thermostats.few.setPointC}°C, On: {thermostats.few.command})" }, 
               "Duct Manual Override": {
                 "urlParam": "ew",

@@ -102,7 +102,7 @@ typedef enum {
   DST_IDLE = 'I', 
   DST_COOL_FEW = 'F', 
   DST_COOL_FEW_MB_LR = 'A', 
-  DST_HEAT_FEW = 'U',
+  DST_HEAT_FEW = 'u',
   DST_COOL_MB_HIGH = 'h', 
   DST_COOL_MB_MED  = 'm', 
   DST_COOL_MB_LOW  = 'l', 
@@ -440,6 +440,11 @@ system_cooling_state_t computeState()
     return state; 
   }
 
+  if (!THERMOSTATS.isCurrent())
+  {
+    return state; 
+  }
+
   if (!AC.isEvapTempValid() || !AC.isOutletTempValid())
     return state;
 
@@ -609,23 +614,47 @@ void computeACCommand(system_cooling_state_t state)
     return;
   }
 
+  double intakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR); 
+  double lrOutletTempC = TEMPERATURES.getTempC(LR_OUTLET_TEMP_ADDR); 
+
   switch (state) 
   {
     case DST_COOL_DONE:       acCommand = CMD_AC_OFF;       break; 
-    case DST_IDLE:            acCommand = CMD_AC_KILL;      break; 
-    case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
-    case DST_COOL_FEW:        acCommand = CMD_AC_COOL_MED;  break; 
+
+    case DST_IDLE:    
+    case DST_HEAT_LR:         
+    case DST_HEAT_FEW:        acCommand = CMD_AC_KILL;      break; 
+    
+    case DST_COOL_FEW:        acCommand = CMD_AC_COOL_LOW;  break; 
+
     case DST_COOL_FEW_MB_LR:  acCommand = CMD_AC_COOL_HIGH; break; 
+
     case DST_COOL_MB_HIGH:    acCommand = CMD_AC_COOL_HIGH; break; 
     case DST_COOL_MB_MED:     acCommand = CMD_AC_COOL_MED;  break; 
     case DST_COOL_MB_LOW:     acCommand = CMD_AC_COOL_LOW;  break; 
+
     case DST_COOL_MB_LR_HIGH: acCommand = CMD_AC_COOL_HIGH; break; 
-    case DST_COOL_MB_LR_MED:  acCommand = CMD_AC_COOL_MED; break; 
-    case DST_COOL_MB_LR_LOW:  acCommand = CMD_AC_COOL_LOW;  break; 
-    case DST_COOL_LR_PUSH:    acCommand = CMD_AC_FAN_HIGH;  break; 
+    case DST_COOL_MB_LR_MED:  acCommand = CMD_AC_COOL_MED;  break; 
+    case DST_COOL_MB_LR_LOW:  acCommand = CMD_AC_COOL_LOW;  break;  
+
     case DST_ACCLIMATE_HIGH:  acCommand = CMD_AC_FAN_HIGH;  break;     
     case DST_ACCLIMATE_MED:   acCommand = CMD_AC_FAN_MED;   break;     
-    case DST_ACCLIMATE_LOW:   acCommand = CMD_AC_FAN_LOW;   break;   
+    case DST_ACCLIMATE_LOW:   acCommand = CMD_AC_FAN_LOW;   break;  
+    case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
+
+    case DST_COOL_LR_PUSH:    
+    {
+      if (lrOutletTempC < 12.0 && AC.isCommand(acCommand) && AC.isCooling())
+      {
+        acCommand = CMD_AC_FAN_LOW; 
+      }
+      else if (lrOutletTempC >= 16.0 && intakeTempC >= 15.0 && AC.isCommand(acCommand) && !AC.isCooling())
+      {
+        acCommand = CMD_AC_COOL_LOW; 
+      }
+      
+      break;
+    } 
   }
 }
 
@@ -640,8 +669,6 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
   {
     case DST_COOL_MB_HIGH:    
     case DST_COOL_MB_LR_HIGH: 
-    case DST_COOL_MB_LR_MED:  
-    case DST_COOL_MB_LR_LOW:  
     case DST_COOL_LR_PUSH:  
     case DST_COOL_FEW_MB_LR:   
     case DST_ACCLIMATE_HIGH:  
@@ -670,7 +697,6 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
     case DST_HEAT_FEW:        
     case DST_COOL_FEW:        
     case DST_ACCLIMATE_HIGH:  
-    case DST_COOL_LR_PUSH:    
         fewDuctCommand = CMD_ENTRYWAY_DUCT_HIGH; break;
   }
 
@@ -689,11 +715,13 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
     HRV_HIGH_EXHAUST, 
     hrvCommand == CMD_VENTILATE_HIGH 
     || hrvCommand == CMD_VENTILATE_MED
+    || lrDuctCommand == CMD_LR_DUCT_HIGH
   ); 
 
   BLOWERS.setCommand(
     HRV_LOW_EXHAUST, 
     hrvCommand != CMD_VENTILATE_OFF
+    || lrDuctCommand == CMD_LR_DUCT_HIGH
   ); 
     
   BLOWERS.setCommand(HRV_EXHAUST_BOOST, 
