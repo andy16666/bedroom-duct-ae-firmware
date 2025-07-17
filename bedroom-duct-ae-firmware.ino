@@ -57,6 +57,7 @@ using AOS::Ping;
 #define EXHAUST_BYPASS    11
 #define ENTRYWAY_BYPASS   12
 #define LR_DUCT_BOOST     13
+#define INTAKE_BOOST      14
 
 #define TRANSITION_TIME_MS 5000
 
@@ -192,6 +193,7 @@ void aosSetup()
   BLOWERS.add("Exhaust Bypass", EXHAUST_BYPASS, false);
   BLOWERS.add("Entryway Bypass", ENTRYWAY_BYPASS, false);
   BLOWERS.add("Livingroom Duct Boost", LR_DUCT_BOOST, false);
+  BLOWERS.add("Intake Boost", INTAKE_BOOST, true);
   BLOWERS.init(); 
   BLOWERS.setAll();
 
@@ -385,12 +387,17 @@ bool needsAcclimation()
   double outletTempC = AC.getOutletTempC(); 
   double ductIntakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR);
   double roomTemperatureC = THERMOSTATS.get(MASTER_BEDROOM).getCurrentTemperatureC(); 
-  
+  double maxCoolTimeSeconds = 
+    (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() > 1.0)
+    ? (COOLING_TIME_BEFORE_ACCLIMATE * THERMOSTATS.getMaxCoolingMagnitude())
+    : COOLING_TIME_BEFORE_ACCLIMATE; 
+
   return
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
-    || (coolingForSeconds() > COOLING_TIME_BEFORE_ACCLIMATE) 
+    || (coolingForSeconds() > maxCoolTimeSeconds) 
     || (!THERMOSTATS.coolingCalledFor() && !THERMOSTATS.heatCalledFor() && outletTempC < 15)
-    || ((state == DST_COOL_DONE || state == DST_IDLE) && (ductIntakeHumidity > 80.0 || outletHumidity > 80.0)); 
+    || (state == DST_COOL_DONE && (ductIntakeHumidity > 80.0 || outletHumidity > 80.0))
+    || (state == DST_IDLE && (ductIntakeHumidity > 85.0 || outletHumidity > 85.0)); 
 }
 
 bool humiditiesValid()
@@ -496,13 +503,21 @@ system_cooling_state_t computeState()
 
   if (stateIsAcclimate())
   {
-    if (THERMOSTATS.coolingCalledFor() && acclimateOnForSeconds() > ACCLIMATE_TIME_WHEN_COOLING)
+    double maxAcclimateTimeWhenCoolingSeconds = 
+      (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() > 1.0)
+      ? (ACCLIMATE_TIME_WHEN_COOLING/THERMOSTATS.getMaxCoolingMagnitude())
+      : ACCLIMATE_TIME_WHEN_COOLING;
+
+    if (THERMOSTATS.coolingCalledFor() && acclimateOnForSeconds() > maxAcclimateTimeWhenCoolingSeconds)
     {
       return DST_ACCLIMATE_DONE; 
     }
     else if (
-      ductIntakeHumidity < 80.0 && ductIntakeHumidity > 20.0
-      && outletHumidity < 80.0 && outletHumidity > 20.0
+      !THERMOSTATS.coolingCalledFor()
+      && ductIntakeHumidity < 70.0 
+      && ductIntakeHumidity > 20.0
+      && outletHumidity     < 70.0 
+      && outletHumidity     > 20.0
     )
     {
       return DST_ACCLIMATE_DONE; 
@@ -715,20 +730,16 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
     HRV_HIGH_EXHAUST, 
     hrvCommand == CMD_VENTILATE_HIGH 
     || hrvCommand == CMD_VENTILATE_MED
-    || lrDuctCommand == CMD_LR_DUCT_HIGH
   ); 
 
   BLOWERS.setCommand(
     HRV_LOW_EXHAUST, 
     hrvCommand != CMD_VENTILATE_OFF
-    || lrDuctCommand == CMD_LR_DUCT_HIGH
   ); 
     
   BLOWERS.setCommand(HRV_EXHAUST_BOOST, 
     hrvCommand == CMD_VENTILATE_HIGH 
-    || lrDuctCommand == CMD_LR_DUCT_HIGH 
-    || lrDuctCommand == CMD_LR_DUCT_MED
-  
+    || lrDuctCommand == CMD_LR_DUCT_HIGH   
   ); 
     
   BLOWERS.setCommand(
@@ -739,6 +750,12 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
   BLOWERS.setCommand(
     LR_DUCT_BOOST, 
     hrvCommand == CMD_VENTILATE_HIGH || lrDuctCommand == CMD_LR_DUCT_HIGH
+  ); 
+
+  BLOWERS.setCommand(
+    INTAKE_BOOST, 
+    lrDuctCommand == CMD_LR_DUCT_HIGH 
+    || (lrDuctCommand == CMD_LR_DUCT_MED && fewDuctCommand == CMD_ENTRYWAY_DUCT_HIGH)
   ); 
 
   BLOWERS.setCommand(
