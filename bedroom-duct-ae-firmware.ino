@@ -41,6 +41,7 @@ using AOS::Thermostats;
 using AOS::TemperatureSensors;
 using AOS::Ping; 
 
+#define ACCLIMIATE_MAX_TIME_FROM_LAST_COOLING 60 * 60
 #define COOLING_TIME_BEFORE_ACCLIMATE 60 * 60
 #define ACCLIMATE_TIME_WHEN_COOLING   15 * 60
 #define FAN_TIME_BEFORE_VALID_HUMIDITIES_SECONDS 30
@@ -163,7 +164,7 @@ void aosInitialize()
   outletHumidity = 0; 
   ductIntakeHumidity = 0;
   roomHumidity = 0; 
-  AC_ENABLED = 0; 
+  AC_ENABLED = 1; 
 }
 
 void aosSetup()
@@ -410,13 +411,18 @@ bool needsAcclimation()
     (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() > 1.0)
     ? (COOLING_TIME_BEFORE_ACCLIMATE * THERMOSTATS.getMaxCoolingMagnitude())
     : COOLING_TIME_BEFORE_ACCLIMATE; 
-
+  
   return
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
     || (coolingForSeconds() > maxCoolTimeSeconds) 
-    || (!THERMOSTATS.coolingCalledFor() && !THERMOSTATS.heatCalledFor() && outletTempC < 15)
+    || (!THERMOSTATS.coolingCalledFor() && !THERMOSTATS.heatCalledFor() && outletTempC < 15 && !lastCoolCycleExpired())
     || (state == DST_COOL_DONE && (ductIntakeHumidity > 80.0 || outletHumidity > 80.0))
     || (state == DST_IDLE && (ductIntakeHumidity > 85.0 || outletHumidity > 85.0)); 
+}
+
+bool lastCoolCycleExpired()
+{
+  return coolingOffForSeconds() > ACCLIMIATE_MAX_TIME_FROM_LAST_COOLING;
 }
 
 bool humiditiesValid()
@@ -534,17 +540,16 @@ system_cooling_state_t computeState()
       ? (ACCLIMATE_TIME_WHEN_COOLING/THERMOSTATS.getMaxCoolingMagnitude())
       : ACCLIMATE_TIME_WHEN_COOLING;
 
-    if (THERMOSTATS.coolingCalledFor() && acclimateOnForSeconds() > maxAcclimateTimeWhenCoolingSeconds)
-    {
-      return DST_ACCLIMATE_DONE; 
-    }
-    else if (
-      !THERMOSTATS.coolingCalledFor()
+    bool endAcclimationToCool = 
+      THERMOSTATS.coolingCalledFor() && acclimateOnForSeconds() > maxAcclimateTimeWhenCoolingSeconds; 
+
+    bool endAcclimationHumidityInRange = !THERMOSTATS.coolingCalledFor()
       && ductIntakeHumidity < 70.0 
       && ductIntakeHumidity > 20.0
       && outletHumidity     < 70.0 
-      && outletHumidity     > 20.0
-    )
+      && outletHumidity     > 20.0;
+
+    if (endAcclimationToCool || endAcclimationHumidityInRange || lastCoolCycleExpired())
     {
       return DST_ACCLIMATE_DONE; 
     }
@@ -680,7 +685,6 @@ void computeACCommand(system_cooling_state_t state)
     case DST_ACCLIMATE_MED:   acCommand = CMD_AC_FAN_MED;   break;     
     case DST_ACCLIMATE_LOW:   acCommand = CMD_AC_FAN_LOW;   break;  
     case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
-
     case DST_COOL_LR_PUSH:    
     {
       if (lrOutletTempC < 12.0 && AC.isCommand(acCommand) && AC.isCooling())
