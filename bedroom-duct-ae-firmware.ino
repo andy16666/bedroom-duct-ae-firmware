@@ -33,6 +33,7 @@
 #include <Thermostats.h>
 #include <SimplicityAC.h> 
 #include <WebServer.h>
+#include <Psychometer.h>
 
 using namespace AOS;
 
@@ -41,7 +42,7 @@ using AOS::Thermostats;
 using AOS::TemperatureSensors;
 using AOS::Ping; 
 
-#define ACCLIMIATE_MAX_TIME_FROM_LAST_COOLING 60 * 60
+#define COOOLING_CYCLE_EXPIRY_TIME_SECONDS 60 * 60
 #define COOLING_TIME_BEFORE_ACCLIMATE 60 * 60
 #define ACCLIMATE_TIME_WHEN_COOLING   15 * 60
 #define FAN_TIME_BEFORE_VALID_HUMIDITIES_SECONDS 30
@@ -120,6 +121,9 @@ typedef enum {
   DST_ACCLIMATE_LOW  = 'a',
   DST_ACCLIMATE_DONE  = 'd'
 } system_cooling_state_t; 
+
+Psychometer outletPsychometer(60); 
+Psychometer ductIntakePsychometer(60); 
 
 static volatile ventilate_cmd_t         hrvCommand          __attribute__((section(".uninitialized_data")));
 static volatile lr_duct_cmd_t           lrDuctCommand       __attribute__((section(".uninitialized_data")));
@@ -210,7 +214,7 @@ void aosSetup1()
   if (AC_ENABLED)
     CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_parseAC);  
 
-  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_processCommands);  
+  CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 1000);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
 }
 
@@ -358,14 +362,14 @@ void task_processCommands()
     if (stateIsAcclimateDone())
     { 
       state = computeState(); 
-      DPRINTF("                             Leave computeState: %c\r\n", state);Serial.flush(); 
+      DPRINTF("                             Leave computeState: %c\r\n", state);
     }
 
-    DPRINTLN("                             Enter computeACCommand");Serial.flush(); 
+    DPRINTLN("                             Enter computeACCommand");
     computeACCommand(state); 
-    DPRINTLN("                             Leave computeACCommand");Serial.flush(); 
+    DPRINTLN("                             Leave computeACCommand");
   }
-  DPRINTLN("                             Enter processCommands");Serial.flush(); 
+  DPRINTLN("                             Enter processCommands");
   processCommands(state, hrvCommand, lrDuctCommand, fewDuctCommand);
   DPRINTLN("                             Leave processCommands");
   DPRINTLN("                             Leave task_processCommands"); 
@@ -422,12 +426,19 @@ bool needsAcclimation()
 
 bool lastCoolCycleExpired()
 {
-  return coolingOffForSeconds() > ACCLIMIATE_MAX_TIME_FROM_LAST_COOLING;
+  return coolingOffForSeconds() > COOOLING_CYCLE_EXPIRY_TIME_SECONDS;
 }
 
 bool humiditiesValid()
 {
   return coolingOffForSeconds() > FAN_TIME_BEFORE_VALID_HUMIDITIES_SECONDS || stateIsAcclimate(); 
+}
+
+bool humidityNotDecreasing()
+{ 
+    return
+      (outletPsychometer.isPopulated() && !outletPsychometer.isDecreasing())
+      || (ductIntakePsychometer.isPopulated() && !ductIntakePsychometer.isDecreasing()); 
 }
 
 bool updateHumidities()
@@ -442,10 +453,17 @@ bool updateHumidities()
     ductIntakeHumidity = calculate_relative_humidity(ductIntakeTempC, evapTempC); 
     outletHumidity = calculate_relative_humidity(outletTempC, evapTempC);    
     roomHumidity = calculate_relative_humidity(roomTemperatureC, evapTempC); 
+
+    ductIntakePsychometer.add( ductIntakeHumidity ); 
+    outletPsychometer.add( outletHumidity ); 
+
     return true; 
   }
   else 
   {
+    ductIntakePsychometer.clear(); 
+    outletPsychometer.clear(); 
+
     return false; 
   }
 }
@@ -549,7 +567,12 @@ system_cooling_state_t computeState()
       && outletHumidity     < 70.0 
       && outletHumidity     > 20.0;
 
-    if (endAcclimationToCool || endAcclimationHumidityInRange || lastCoolCycleExpired())
+    if (
+      endAcclimationToCool 
+      || endAcclimationHumidityInRange 
+      || lastCoolCycleExpired()
+      || humidityNotDecreasing()
+    )
     {
       return DST_ACCLIMATE_DONE; 
     }
