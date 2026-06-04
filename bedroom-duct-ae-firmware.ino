@@ -419,9 +419,9 @@ bool needsAcclimation()
   return
     ductIntakeHumidity <= 0 || outletHumidity <= 0 || roomHumidity <= 0
     || (coolingForSeconds() > maxCoolTimeSeconds) 
-    || (!THERMOSTATS.coolingCalledFor() && !THERMOSTATS.heatCalledFor() && outletTempC < 15 && !lastCoolCycleExpired())
-    || (state == DST_COOL_DONE && (ductIntakeHumidity > 80.0 || outletHumidity > 80.0))
-    || (state == DST_IDLE && (ductIntakeHumidity > 85.0 || outletHumidity > 85.0)); 
+    //|| (!THERMOSTATS.coolingCalledFor() && !THERMOSTATS.heatCalledFor() && outletTempC < 15 && !lastCoolCycleExpired())
+    || (state == DST_COOL_DONE && (ductIntakeHumidity > 80.0 || outletHumidity > 80.0));
+    //|| (state == DST_IDLE && (ductIntakeHumidity > 95.0 || outletHumidity > 95.0) && !lastCoolCycleExpired()); 
 }
 
 bool lastCoolCycleExpired()
