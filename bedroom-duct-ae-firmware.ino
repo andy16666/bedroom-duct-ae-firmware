@@ -561,14 +561,14 @@ system_cooling_state_t computeState()
     bool endAcclimationToCool = 
       THERMOSTATS.coolingCalledFor() && acclimateOnForSeconds() > maxAcclimateTimeWhenCoolingSeconds; 
 
-    bool endAcclimationHumidityInRange = !THERMOSTATS.coolingCalledFor()
-      && ductIntakeHumidity < 70.0 
+    bool endAcclimationHumidityInRange =
+         ductIntakeHumidity < 70.0 
       && ductIntakeHumidity > 20.0
       && outletHumidity     < 70.0 
       && outletHumidity     > 20.0;
 
     if (
-      endAcclimationToCool 
+         endAcclimationToCool 
       || endAcclimationHumidityInRange 
       || lastCoolCycleExpired()
       || humidityNotDecreasing()
@@ -715,17 +715,13 @@ void computeACCommand(system_cooling_state_t state)
     case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
     case DST_COOL_LR_PUSH:    
     {
-      if (lrOutletTempC < 10.0 && intakeTempC < 10.0 && AC.isCommand(acCommand) && AC.isCooling())
+      if (lrOutletTempC < 15.0 && intakeTempC < 10.0 && AC.isCommand(acCommand) && AC.isCooling())
       {
         acCommand = CMD_AC_FAN_LOW; 
       }
       else if (lrOutletTempC >= 16.0 && intakeTempC >= 15.0 && AC.isCommand(acCommand) && !AC.isCooling())
       {
         acCommand = CMD_AC_COOL_LOW; 
-      }
-      else 
-      {
-        acCommand = CMD_AC_OFF; 
       }
       
       break;
