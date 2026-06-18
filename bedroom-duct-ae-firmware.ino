@@ -122,8 +122,8 @@ typedef enum {
   DST_ACCLIMATE_DONE  = 'd'
 } system_cooling_state_t; 
 
-Psychometer outletPsychometer(60); 
-Psychometer ductIntakePsychometer(60); 
+Psychometer outletPsychometer(240); 
+Psychometer ductIntakePsychometer(240); 
 
 static volatile ventilate_cmd_t         hrvCommand          __attribute__((section(".uninitialized_data")));
 static volatile lr_duct_cmd_t           lrDuctCommand       __attribute__((section(".uninitialized_data")));
@@ -438,7 +438,7 @@ bool humidityNotDecreasing()
 { 
     return
       (outletPsychometer.isPopulated() && !outletPsychometer.isDecreasing())
-      || (ductIntakePsychometer.isPopulated() && !ductIntakePsychometer.isDecreasing()); 
+      && (ductIntakePsychometer.isPopulated() && !ductIntakePsychometer.isDecreasing()); 
 }
 
 bool updateHumidities()
@@ -632,27 +632,32 @@ system_cooling_state_t computeState()
     }
     else
     {
-      return lr.coolingCalledFor() ? DST_COOL_MB_LR_LOW : DST_COOL_MB_LOW; 
+      return lr.coolingCalledFor() 
+          ? ( lr.getMagnitude() > mb.getMagnitude() ? DST_COOL_LR_PUSH : DST_COOL_MB_LR_LOW ) 
+          : DST_COOL_MB_LOW; 
     }
   }
-  else if (lr.coolingCalledFor() && (AC_ENABLED || lrCoolingAvailable))
+  // If MB is cooling, magnitude is less than 0.5, so it's not. 
+  else if (lr.coolingCalledFor() && !mb.heatCalledFor() && (AC_ENABLED || lrCoolingAvailable))
   {
-    if (mb.heatCalledFor() || (mb.getCommand() && mb.getMagnitude() < 0.5))
+    if (mb.getCommand() && mb.coolingCalledFor()) 
     {
-      return DST_COOL_LR_PUSH; 
+      return lr.getMagnitude() > mb.getMagnitude() 
+              ? DST_COOL_LR_PUSH 
+              : DST_COOL_MB_LR_MED; 
     }
-    else if (lr.getMagnitude() >= 1.0)
+    else if (!mb.getCommand())
     {
-      return (few.coolingCalledFor() && few.getMagnitude() >= 1.0) 
+      return (few.coolingCalledFor() && few.getMagnitude() >= lr.getMagnitude()) 
             ? DST_COOL_FEW_MB_LR 
             : DST_COOL_MB_LR_HIGH; 
     }
     else
     {
-      return few.coolingCalledFor() ? DST_COOL_FEW_MB_LR : DST_COOL_MB_LR_MED; 
+      return stateIsCool() ? DST_COOL_DONE : DST_IDLE; 
     }
   }
-  else if (few.coolingCalledFor() && (AC_ENABLED || fewCoolingAvailable))
+  else if (few.coolingCalledFor() && (!mb.getCommand() || mb.coolingCalledFor()) && (AC_ENABLED || fewCoolingAvailable))
   {
     return DST_COOL_FEW; 
   }
@@ -710,13 +715,17 @@ void computeACCommand(system_cooling_state_t state)
     case DST_ACCLIMATE_DONE:  acCommand = CMD_AC_OFF;       break; 
     case DST_COOL_LR_PUSH:    
     {
-      if (lrOutletTempC < 12.0 && AC.isCommand(acCommand) && AC.isCooling())
+      if (lrOutletTempC < 10.0 && intakeTempC < 10.0 && AC.isCommand(acCommand) && AC.isCooling())
       {
         acCommand = CMD_AC_FAN_LOW; 
       }
       else if (lrOutletTempC >= 16.0 && intakeTempC >= 15.0 && AC.isCommand(acCommand) && !AC.isCooling())
       {
         acCommand = CMD_AC_COOL_LOW; 
+      }
+      else 
+      {
+        acCommand = CMD_AC_OFF; 
       }
       
       break;
@@ -726,6 +735,9 @@ void computeACCommand(system_cooling_state_t state)
 
 void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, lr_duct_cmd_t lrDuctCommand, few_duct_cmd_t fewDuctCommand)
 {
+  double intakeTempC = TEMPERATURES.getTempC(INTAKE_TEMP_ADDR); 
+  double lrOutletTempC = TEMPERATURES.getTempC(LR_OUTLET_TEMP_ADDR); 
+
   if (state == DST_UNINIT)
   {
     return;
@@ -743,16 +755,17 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
 
   switch (state) 
   {
+    case DST_COOL_LR_PUSH:
+      lrDuctCommand = lrOutletTempC < 17 ? CMD_LR_DUCT_HIGH : CMD_LR_DUCT_MED; break; 
     case DST_COOL_FEW_MB_LR: 
     case DST_COOL_MB_LR_HIGH: 
     case DST_COOL_MB_LR_MED:  
-    case DST_COOL_LR_PUSH:
     case DST_ACCLIMATE_HIGH:  
       lrDuctCommand = CMD_LR_DUCT_HIGH;  break; 
     case DST_COOL_MB_LR_LOW:  
     case DST_ACCLIMATE_MED:  
-      lrDuctCommand = CMD_LR_DUCT_MED;   break; 
-    case DST_HEAT_LR:         
+    case DST_HEAT_LR:
+      lrDuctCommand = CMD_LR_DUCT_MED;   break;    
     case DST_ACCLIMATE_LOW:   
       lrDuctCommand = CMD_LR_DUCT_LOW;   break;   
   }
