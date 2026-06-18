@@ -576,7 +576,7 @@ system_cooling_state_t computeState()
     {
       return DST_ACCLIMATE_DONE; 
     }
-    else if (THERMOSTATS.heatCalledFor())
+    else if (mb.heatCalledFor())
     {
       return DST_ACCLIMATE_LOW; 
     }
@@ -595,13 +595,17 @@ system_cooling_state_t computeState()
   }
   else if (AC_ENABLED && needsAcclimation())
   {
-    if (THERMOSTATS.heatCalledFor())
+    if (mb.heatCalledFor())
     {
       return DST_ACCLIMATE_LOW;
     }
     else if (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() >= 1.5)
     {
       return DST_ACCLIMATE_HIGH;
+    }
+    else if (THERMOSTATS.coolingCalledFor() && THERMOSTATS.getMaxCoolingMagnitude() >= 1.0)
+    {
+      return DST_ACCLIMATE_MED;
     }
 
     switch(acCommand)
@@ -752,7 +756,7 @@ void processCommands(system_cooling_state_t state, ventilate_cmd_t hrvCommand, l
   switch (state) 
   {
     case DST_COOL_LR_PUSH:
-      lrDuctCommand = lrOutletTempC < 17 ? CMD_LR_DUCT_HIGH : CMD_LR_DUCT_MED; break; 
+      lrDuctCommand = CMD_LR_DUCT_HIGH; break; 
     case DST_COOL_FEW_MB_LR: 
     case DST_COOL_MB_LR_HIGH: 
     case DST_COOL_MB_LR_MED:  
