@@ -103,19 +103,24 @@ typedef enum {
 typedef enum {
   DST_UNINIT = 'U', 
   DST_IDLE = 'I', 
+
   DST_COOL_FEW = 'F', 
   DST_COOL_FEW_MB_LR = 'A', 
   DST_HEAT_FEW = 'u',
+
   DST_COOL_MB_HIGH = 'h', 
   DST_COOL_MB_MED  = 'm', 
   DST_COOL_MB_LOW  = 'l', 
+
   DST_COOL_MB_LR_HIGH = 'H', 
   DST_COOL_MB_LR_MED  = 'M', 
   DST_COOL_MB_LR_LOW  = 'L',
+  
   // Push: Used to minimize cooling in the room with the A/C by pushing it elsewhere. 
   DST_COOL_LR_PUSH  = 'P',
   DST_COOL_DONE = 'i', 
-  DST_HEAT_LR = 'T', 
+  DST_HEAT_LR = 'T',
+
   DST_ACCLIMATE_HIGH = 'c',
   DST_ACCLIMATE_MED  = 'b',
   DST_ACCLIMATE_LOW  = 'a',
@@ -168,7 +173,7 @@ void aosInitialize()
   outletHumidity = 0; 
   ductIntakeHumidity = 0;
   roomHumidity = 0; 
-  AC_ENABLED = 1; 
+  AC_ENABLED = 0; 
 }
 
 void aosSetup()
