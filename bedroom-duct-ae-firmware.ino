@@ -106,7 +106,9 @@ typedef enum {
 
   DST_COOL_FEW = 'F', 
   DST_COOL_FEW_MB_LR = 'A', 
+  
   DST_HEAT_FEW = 'u',
+  DST_HEAT_LR = 'T',
 
   DST_COOL_MB_HIGH = 'h', 
   DST_COOL_MB_MED  = 'm', 
@@ -119,7 +121,7 @@ typedef enum {
   // Push: Used to minimize cooling in the room with the A/C by pushing it elsewhere. 
   DST_COOL_LR_PUSH  = 'P',
   DST_COOL_DONE = 'i', 
-  DST_HEAT_LR = 'T',
+  
 
   DST_ACCLIMATE_HIGH = 'c',
   DST_ACCLIMATE_MED  = 'b',
@@ -173,7 +175,7 @@ void aosInitialize()
   outletHumidity = 0; 
   ductIntakeHumidity = 0;
   roomHumidity = 0; 
-  AC_ENABLED = 0; 
+  AC_ENABLED = false; 
 }
 
 void aosSetup()
@@ -210,14 +212,12 @@ void aosSetup()
 
   setupFrontEnd("/hrv.html"); 
 
-  if (AC_ENABLED)
-    CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollAC, 15000);   
+  CORE_0_KERNEL->add(CORE_0_KERNEL, task_pollAC, AC_ENABLED ? 15000 : 60000);   
 }
 
 void aosSetup1()
 {
-  if (AC_ENABLED)
-    CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_parseAC);  
+  CORE_1_KERNEL->addImmediate(CORE_1_KERNEL, task_parseAC);  
 
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_processCommands, 1000);  
   CORE_1_KERNEL->add(CORE_1_KERNEL, task_updateNextBlower, TRANSITION_TIME_MS); 
@@ -304,6 +304,7 @@ bool handleHttpArg(String argName, String arg)
 
 void populateHttpResponse(JsonDocument& document) 
 {
+  document["acEnabled"] = AC_ENABLED; 
   document["intakeHumidity"] = ductIntakeHumidity; 
   document["hrvCommand"] = String((char)hrvCommand).c_str();
   document["lrDuctCommand"] = String((char)lrDuctCommand).c_str();
@@ -316,21 +317,10 @@ void populateHttpResponse(JsonDocument& document)
   document["time"] = secondsToHMS(seconds()); 
   BLOWERS.addTo("blowers", document); 
 
-  if (AC_ENABLED)
-  {
-    if (AC.isSet())
-    {
-      AC.addTo(AC_HOSTNAME, document); 
-      document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
-      document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
-    }
-  }
-  else 
-  {
-    AC.addTo(AC_HOSTNAME, document); 
-    document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
-    document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
-  }
+  AC.addTo(AC_HOSTNAME, document); 
+  document[AC_HOSTNAME]["online"] = AC.isOnline(); 
+  document[AC_HOSTNAME]["outletHumidity"] = outletHumidity; 
+  document[AC_HOSTNAME]["roomHumidity"]   = roomHumidity; 
 
   if (THERMOSTATS.isCurrent())
   {
@@ -356,6 +346,7 @@ void task_pollAC()
   {
     AC.execute(); 
   }
+  AC_ENABLED = AC.isOnline();
   delay(10); 
 }
 
